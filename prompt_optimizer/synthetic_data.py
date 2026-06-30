@@ -202,7 +202,7 @@ async def _db_call(
             f"finish_reason={body['choices'][0].get('finish_reason')!r}. "
             f"Raw response: {json.dumps(body)[:1500]}"
         )
-    return content
+    return content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
 
 async def _generate_combo(

@@ -7,7 +7,7 @@ import json
 from typing import Dict, List, Tuple
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .config import DatabricksConfig
 from .synthetic_data import SyntheticInput
@@ -52,7 +52,10 @@ class WorkflowEvaluator:
             },
             timeout=90,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise ValueError(
+                f"{resp.status_code} from {self._endpoint_url}: {resp.text[:1500]}"
+            )
         return resp.json()["choices"][0]["message"]["content"]
 
     async def run_batch(
@@ -72,8 +75,9 @@ class WorkflowEvaluator:
                     try:
                         response = await self._call(client, system_prompt, inp.text)
                     except Exception as e:
-                        print(f"  Warning: eval failed for '{inp.text[:60]}…': {e}")
-                        response = f"[ERROR: {e}]"
+                        cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
+                        print(f"  Warning: eval failed for '{inp.text[:60]}…': {cause}")
+                        response = f"[ERROR: {cause}]"
                     return inp, response
 
         return await asyncio.gather(*[bounded_call(inp) for inp in inputs])

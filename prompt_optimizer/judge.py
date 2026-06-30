@@ -17,10 +17,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .config import DatabricksConfig, JudgeConfig, JudgeDimension
 from .synthetic_data import SyntheticInput
+
+
+def _unwrap(e: Exception) -> Exception:
+    return e.last_attempt.exception() if isinstance(e, RetryError) else e
 
 # ------------------------------------------------------------------ #
 # Judge prompts                                                       #
@@ -196,7 +200,7 @@ class DatabricksJudge:
             hallucinated = parsed.get("hallucinated_details", [])
             comment = parsed.get("overall_comment", "")
         except Exception as e:
-            print(f"  Warning: judge failed for '{inp.text[:60]}…': {e}")
+            print(f"  Warning: judge failed for '{inp.text[:60]}…': {_unwrap(e)}")
             scores = {d.name: 0.0 for d in self._judge_config.dimensions}
             reasoning = {d.name: f"Judge error: {e}" for d in self._judge_config.dimensions}
             hallucinated = []

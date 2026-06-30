@@ -14,9 +14,13 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .config import DatabricksConfig, SyntheticDataConfig
+
+
+def _unwrap(e: Exception) -> Exception:
+    return e.last_attempt.exception() if isinstance(e, RetryError) else e
 
 # ------------------------------------------------------------------ #
 # Supported integrations manifest (single source of truth)           #
@@ -281,7 +285,7 @@ async def _generate_ood(
                 for t, b in zip(texts, behaviors)
             ])
         except Exception as e:
-            print(f"  Warning: OOD generation failed for '{scenario}': {e}")
+            print(f"  Warning: OOD generation failed for '{scenario}': {_unwrap(e)}")
 
     return results
 
@@ -322,7 +326,7 @@ async def generate_dataset(config: SyntheticDataConfig, db_config: DatabricksCon
     for (trigger, output, approval), result in zip(_COMBINATIONS, combo_results):
         label = _combo_label(trigger, output, approval)
         if isinstance(result, Exception):
-            print(f"  Warning: failed to generate combo '{label}': {result}")
+            print(f"  Warning: failed to generate combo '{label}': {_unwrap(result)}")
         else:
             inputs.extend(result)
 

@@ -7,10 +7,14 @@ import json
 from typing import Dict, List, Tuple
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .config import DatabricksConfig, OptimizerConfig, JudgeConfig
 from .judge import EvalResult
+
+
+def _unwrap(e: Exception) -> Exception:
+    return e.last_attempt.exception() if isinstance(e, RetryError) else e
 
 _ANALYSIS_SYSTEM = """\
 You are a prompt engineer improving an AI workflow builder assistant that helps \
@@ -156,7 +160,7 @@ class PromptOptimizer:
         valid = []
         for c in candidates:
             if isinstance(c, Exception):
-                print(f"  Warning: candidate generation failed: {c}")
+                print(f"  Warning: candidate generation failed: {_unwrap(c)}")
             else:
                 valid.append(c)
 

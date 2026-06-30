@@ -73,7 +73,15 @@ async def _db_call(
         timeout=90,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    body = resp.json()
+    content = body["choices"][0]["message"]["content"]
+    if not content or not content.strip():
+        raise ValueError(
+            f"Empty content from {endpoint_url}. "
+            f"finish_reason={body['choices'][0].get('finish_reason')!r}. "
+            f"Raw response: {json.dumps(body)[:1500]}"
+        )
+    return content
 
 
 async def _analyze_failures(
@@ -94,7 +102,7 @@ async def _analyze_failures(
     )
     user = f"Current system prompt:\n{current_prompt}\n\nPoor-performing examples:\n{examples}"
     async with httpx.AsyncClient() as client:
-        raw = await _db_call(client, endpoint_url, headers, _ANALYSIS_SYSTEM, user, max_tokens=1024)
+        raw = await _db_call(client, endpoint_url, headers, _ANALYSIS_SYSTEM, user, max_tokens=2048)
     return json.loads(raw)
 
 

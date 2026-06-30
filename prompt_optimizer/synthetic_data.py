@@ -194,7 +194,15 @@ async def _db_call(
         timeout=90,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    body = resp.json()
+    content = body["choices"][0]["message"]["content"]
+    if not content or not content.strip():
+        raise ValueError(
+            f"Empty content from {endpoint_url}. "
+            f"finish_reason={body['choices'][0].get('finish_reason')!r}. "
+            f"Raw response: {json.dumps(body)[:1500]}"
+        )
+    return content
 
 
 async def _generate_combo(
@@ -214,7 +222,7 @@ async def _generate_combo(
 
         raw_behaviors = await _db_call(
             client, endpoint_url, headers, _BEHAVIOR_SYSTEM,
-            f"User messages:\n{json.dumps(texts, indent=2)}", max_tokens=1024,
+            f"User messages:\n{json.dumps(texts, indent=2)}", max_tokens=2048,
         )
         behaviors: List[str] = json.loads(raw_behaviors)
 
@@ -249,14 +257,14 @@ async def _generate_ood(
                 raw_texts = await _db_call(
                     client, endpoint_url, headers, system,
                     f"Generate {n} messages requesting automation around: {scenario}",
-                    max_tokens=800,
+                    max_tokens=1500,
                 )
                 texts: List[str] = json.loads(raw_texts)
 
                 raw_behaviors = await _db_call(
                     client, endpoint_url, headers, _BEHAVIOR_SYSTEM,
                     f"User messages:\n{json.dumps(texts, indent=2)}",
-                    max_tokens=512,
+                    max_tokens=1024,
                 )
                 behaviors: List[str] = json.loads(raw_behaviors)
 

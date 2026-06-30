@@ -37,7 +37,7 @@ sys.path.insert(0, "/Workspace/Repos/ryan.lung@ibotta.com/n8n")
 
 dbutils.widgets.dropdown("mode", "evaluate", ["evaluate", "optimize", "generate"], "Mode")
 dbutils.widgets.text("max_iterations", "", "Max iterations (blank = use config)")
-dbutils.widgets.checkbox("dry_run", False, "Dry run (no n8n writes)")
+dbutils.widgets.dropdown("dry_run", "False", ["True", "False"], "Dry run (no n8n writes)")
 
 # COMMAND ----------
 

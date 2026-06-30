@@ -3,7 +3,7 @@ import os
 import re
 import yaml
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -58,12 +58,11 @@ class OptimizerConfig:
     improvement_model: str
     candidates_per_iteration: int
     worst_examples_k: int = 5
-    dry_run: bool = False
 
 
 @dataclass
 class Config:
-    n8n: N8NConfig
+    prompts: Dict[str, str]   # node_name -> current prompt text, pasted in manually
     databricks: DatabricksConfig
     synthetic_data: SyntheticDataConfig
     optimizer: OptimizerConfig
@@ -96,12 +95,7 @@ def load_config(path: str = "config.yaml") -> Config:
     with open(path) as f:
         raw = _walk(yaml.safe_load(f))
 
-    n8n = N8NConfig(
-        base_url=raw["n8n"]["base_url"].rstrip("/"),
-        api_key=raw["n8n"]["api_key"],
-        workflow_id=raw["n8n"]["workflow_id"],
-        prompt_nodes=[PromptNodeConfig(**pn) for pn in raw["n8n"].get("prompt_nodes", [])],
-    )
+    prompts: Dict[str, str] = raw.get("prompts", {})
 
     db = raw["databricks"]
     databricks = DatabricksConfig(
@@ -128,12 +122,11 @@ def load_config(path: str = "config.yaml") -> Config:
         improvement_model=opt["improvement_model"],
         candidates_per_iteration=opt["candidates_per_iteration"],
         worst_examples_k=opt.get("worst_examples_k", 5),
-        dry_run=opt.get("dry_run", False),
     )
 
     judge = JudgeConfig(
         dimensions=[JudgeDimension(**d) for d in raw["judge"]["dimensions"]],
     )
 
-    return Config(n8n=n8n, databricks=databricks, synthetic_data=synthetic_data,
+    return Config(prompts=prompts, databricks=databricks, synthetic_data=synthetic_data,
                   optimizer=optimizer, judge=judge)

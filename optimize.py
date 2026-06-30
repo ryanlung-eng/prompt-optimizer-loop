@@ -2,11 +2,14 @@
 """
 n8n Prompt Optimizer — CLI entry point.
 
+n8n is never read from or written to — paste the current prompt into
+config.yaml's 'prompts' section, then copy the best-scoring prompt printed
+at the end of the run back into n8n yourself.
+
 Usage examples:
   python optimize.py                          # full loop with config.yaml
   python optimize.py --config custom.yaml
   python optimize.py --iterations 5
-  python optimize.py --dry-run               # evaluate + generate candidates, no n8n writes
   python optimize.py --generate-only         # only generate + cache synthetic dataset
   python optimize.py --evaluate-only         # score current prompts, no optimization
   python optimize.py --clear-cache           # delete cached synthetic dataset then run
@@ -26,15 +29,13 @@ console = Console()
               help="Path to config.yaml")
 @click.option("--iterations", type=int, default=None,
               help="Override max_iterations from config")
-@click.option("--dry-run", is_flag=True, default=False,
-              help="Evaluate and generate candidates but never write to n8n")
 @click.option("--generate-only", is_flag=True, default=False,
               help="Only generate synthetic dataset (cached to disk) then exit")
 @click.option("--evaluate-only", is_flag=True, default=False,
               help="Score current prompts without running the optimization loop")
 @click.option("--clear-cache", is_flag=True, default=False,
               help="Delete cached synthetic dataset before running")
-def main(config_path, iterations, dry_run, generate_only, evaluate_only, clear_cache):
+def main(config_path, iterations, generate_only, evaluate_only, clear_cache):
     from prompt_optimizer.config import load_config
     from prompt_optimizer.loop import run_optimization_loop
 
@@ -55,7 +56,6 @@ def main(config_path, iterations, dry_run, generate_only, evaluate_only, clear_c
 
     asyncio.run(run_optimization_loop(
         config=cfg,
-        dry_run=dry_run,
         generate_only=generate_only,
         evaluate_only=evaluate_only,
     ))

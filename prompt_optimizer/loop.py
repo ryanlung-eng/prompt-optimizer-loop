@@ -4,17 +4,14 @@ Ties together synthetic data, evaluation, judging, tracking, and optimization.
 """
 import asyncio
 import hashlib
-import json
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from rich.console import Console
 from rich.table import Table
-from rich import print as rprint
 
 from .config import Config
 from .evaluator import WorkflowEvaluator
 from .judge import DatabricksJudge, EvalResult
-from .n8n_client import N8NClient
 from .optimizer import PromptOptimizer
 from .synthetic_data import SyntheticInput, generate_dataset
 from .tracker import PromptTracker
@@ -134,7 +131,6 @@ async def _optimize_node(
     optimizer: PromptOptimizer,
     tracker: PromptTracker,
     config: Config,
-    dry_run: bool,
 ) -> tuple[str, float]:
     """
     Run one optimization cycle for a single node.
@@ -208,16 +204,12 @@ async def _optimize_node(
 
 async def run_optimization_loop(
     config: Config,
-    dry_run: bool = False,
     generate_only: bool = False,
     evaluate_only: bool = False,
 ):
-    dry_run = dry_run or config.optimizer.dry_run
-
     console.rule("[bold blue]n8n Prompt Optimizer[/bold blue]")
-    console.print(f"  Workflow: {config.n8n.workflow_id}")
-    console.print(f"  Nodes:    {[pn.node_name for pn in config.n8n.prompt_nodes]}")
-    console.print(f"  Mode:     {'dry-run' if dry_run else 'live'}")
+    console.print(f"  Nodes: {list(config.prompts.keys())}")
+    console.print("  n8n write-back: disabled — copy the best prompt printed below into n8n manually")
     console.print()
 
     # --- Synthetic dataset ---
@@ -230,15 +222,9 @@ async def run_optimization_loop(
         console.print("\n[green]--generate-only: done.[/green]")
         return
 
-    # --- Load current prompts from n8n ---
-    console.rule("[dim]Loading workflow prompts[/dim]")
-    n8n = N8NClient(config.n8n)
-    workflow = n8n.get_workflow()
-    current_prompts: Dict[str, str] = n8n.extract_prompts(workflow)
-    console.print(f"  Extracted prompts from {len(current_prompts)} node(s)")
-
+    current_prompts: Dict[str, str] = dict(config.prompts)
     if not current_prompts:
-        console.print("[red]No prompts extracted. Check config.yaml prompt_nodes settings.[/red]")
+        console.print("[red]No prompts configured. Add entries under config.yaml's 'prompts' section.[/red]")
         return
 
     # --- Initialize services ---
@@ -278,17 +264,11 @@ async def run_optimization_loop(
                 optimizer=optimizer,
                 tracker=tracker,
                 config=config,
-                dry_run=dry_run,
             )
             updated_prompts[node_name] = best_prompt
 
             if best_score < config.optimizer.score_threshold:
                 all_converged = False
-
-        # Push best prompts for this iteration to n8n
-        changed = {k: v for k, v in updated_prompts.items() if v != best_prompts[k]}
-        if changed:
-            n8n.update_prompts(changed, dry_run=dry_run)
 
         best_prompts = updated_prompts
 
@@ -300,7 +280,7 @@ async def run_optimization_loop(
                       f"Best prompts applied.[/yellow]")
 
     # --- Final summary ---
-    console.rule("[bold]Final prompts[/bold]")
+    console.rule("[bold]Best prompts — copy into n8n manually[/bold]")
     for node_name, prompt in best_prompts.items():
         history = tracker.get_history(node_name, limit=50)
         console.print(f"\n[bold]{node_name}[/bold]")
@@ -309,4 +289,7 @@ async def run_optimization_loop(
             best_run = max(history, key=lambda r: r.get("metrics.avg_overall_score", 0))
             console.print(f"  Best MLflow run: {best_run.get('run_id', '')[:8]}… "
                           f"score={best_run.get('metrics.avg_overall_score', 0):.3f}")
-        console.print(f"  Final prompt hash: {_prompt_hash(prompt)}")
+        console.print(f"  Prompt hash: {_prompt_hash(prompt)}\n")
+        console.rule(f"[dim]{node_name} — full prompt text[/dim]")
+        console.print(prompt)
+        console.rule()

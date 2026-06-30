@@ -1,15 +1,10 @@
-n8n:
-  base_url: "${N8N_BASE_URL}"        # e.g. https://n8n.ibotta.com or http://localhost:5678
-  api_key: "${N8N_API_KEY}"
-  workflow_id: "${N8N_WORKFLOW_ID}"
-
-  # ONLY the workflow builder node is tuned — it's the most validatable and highest-impact.
-  # Other knowledge agent nodes (intent classifier, etc.) are NOT in this list.
-  # Set node_name to exactly what appears in the n8n UI canvas.
-  prompt_nodes:
-    - node_name: "Workflow Builder"
-      param_path: "parameters.options.systemMessage"
-      description: "Primary workflow generation system prompt"
+# n8n is unreachable from Databricks (network ACL blocks staging) — the loop
+# never reads or writes n8n directly. Paste the node's current system prompt
+# here; the best-scoring prompt is printed in full at the end of the run for
+# you to copy back into the n8n UI manually.
+prompts:
+  "Workflow Builder": |
+    PASTE_YOUR_CURRENT_WORKFLOW_BUILDER_SYSTEM_PROMPT_HERE
 
 databricks:
   workspace_url: "${DATABRICKS_HOST}"    # e.g. https://adb-xxx.azuredatabricks.net
@@ -34,7 +29,6 @@ optimizer:
   improvement_model: "databricks-meta-llama-3-1-70b-instruct"  # unused — optimizer uses judge_endpoint
   candidates_per_iteration: 3
   worst_examples_k: 6        # Bottom-K fed to Haiku for failure analysis
-  dry_run: false
 
 judge:
   # Weights must sum to 1.0

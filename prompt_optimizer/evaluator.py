@@ -43,7 +43,7 @@ class WorkflowEvaluator:
             self._endpoint_url,
             headers=self._headers,
             json={
-                "messages": [
+                "input": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
@@ -56,7 +56,19 @@ class WorkflowEvaluator:
             raise ValueError(
                 f"{resp.status_code} from {self._endpoint_url}: {resp.text[:1500]}"
             )
-        return resp.json()["choices"][0]["message"]["content"]
+        body = resp.json()
+
+        if "choices" in body:
+            return body["choices"][0]["message"]["content"]
+        if "output" in body:
+            for item in body["output"]:
+                if item.get("type") == "message":
+                    for block in item.get("content", []):
+                        if block.get("type") in ("output_text", "text") and block.get("text"):
+                            return block["text"]
+        raise ValueError(
+            f"Unrecognized response shape from {self._endpoint_url}: {json.dumps(body)[:1500]}"
+        )
 
     async def run_batch(
         self,

@@ -328,6 +328,7 @@ async def generate_dataset(config: SyntheticDataConfig, db_config: DatabricksCon
 
     print(f"  Generated {len(inputs)} in-distribution inputs. Now generating OOD…")
     ood = await _generate_ood(endpoint_url, headers, config)
+    inputs.extend(ood)
 
     cache.write_text(json.dumps([i.to_dict() for i in inputs], indent=2))
     print(

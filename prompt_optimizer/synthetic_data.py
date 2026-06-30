@@ -296,6 +296,7 @@ async def generate_dataset(config: SyntheticDataConfig, db_config: DatabricksCon
     Returns inputs sorted so in-distribution come first, OOD at the end.
     """
     cache = Path(config.cache_path)
+    cache.parent.mkdir(parents=True, exist_ok=True)
     if cache.exists():
         print(f"  Loading synthetic dataset from cache: {cache}")
         raw = json.loads(cache.read_text())

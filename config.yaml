@@ -26,7 +26,7 @@ databricks:
 synthetic_data:
   num_samples_per_category: 4
   categories: []   # unused — matrix is defined in synthetic_data.py
-  cache_path: "/local_disk0/tmp/n8n-optimizer/synthetic_dataset.json"
+  cache_path: "/Workspace/Users/ryan.lung@ibotta.com/n8n-optimizer-cache/synthetic_dataset.json"
 
 optimizer:
   score_threshold: 0.85

@@ -1,0 +1,58 @@
+n8n:
+  base_url: "${N8N_BASE_URL}"        # e.g. https://n8n.ibotta.com or http://localhost:5678
+  api_key: "${N8N_API_KEY}"
+  workflow_id: "${N8N_WORKFLOW_ID}"
+
+  # ONLY the workflow builder node is tuned — it's the most validatable and highest-impact.
+  # Other knowledge agent nodes (intent classifier, etc.) are NOT in this list.
+  # Set node_name to exactly what appears in the n8n UI canvas.
+  prompt_nodes:
+    - node_name: "Workflow Builder"
+      param_path: "parameters.options.systemMessage"
+      description: "Primary workflow generation system prompt"
+
+databricks:
+  workspace_url: "${DATABRICKS_HOST}"    # e.g. https://adb-xxx.azuredatabricks.net
+  token: "${DATABRICKS_TOKEN}"
+  # Endpoint the workflow builder node actually calls — used for direct prompt eval
+  eval_endpoint: "databricks-meta-llama-3-1-70b-instruct"
+  # Separate endpoint (can be same) for the judge LLM
+  judge_endpoint: "databricks-meta-llama-3-1-70b-instruct"
+  experiment_name: "/Users/ryan.lung@ibotta.com/n8n-prompt-optimizer"
+  results_table: "main.prompt_optimizer.run_results"   # optional Delta table
+
+synthetic_data:
+  anthropic_api_key: "${ANTHROPIC_API_KEY}"
+  model: "claude-haiku-4-5-20251001"
+  # Samples per trigger×output combination (categories are auto-generated from the
+  # supported matrix in synthetic_data.py — the 'categories' key is ignored)
+  num_samples_per_category: 4
+  categories: []   # unused — matrix is defined in synthetic_data.py
+  cache_path: ".synthetic_dataset.json"
+
+optimizer:
+  score_threshold: 0.85
+  max_iterations: 10
+  improvement_model: "claude-haiku-4-5-20251001"
+  candidates_per_iteration: 3
+  worst_examples_k: 6        # Bottom-K fed to Haiku for failure analysis
+  dry_run: false
+
+judge:
+  # Weights must sum to 1.0
+  dimensions:
+    - name: intent_understanding
+      weight: 0.25
+      description: "Correctly identified trigger, output(s), and approval requirements"
+    - name: workflow_accuracy
+      weight: 0.25
+      description: "Technically correct n8n node structure; correct pushback for OOD requests"
+    - name: clarity
+      weight: 0.15
+      description: "Understandable to a non-technical user; no jargon"
+    - name: completeness
+      weight: 0.15
+      description: "Every user-specified detail (account, channel, schedule, mapping) reflected"
+    - name: knowledge_honesty
+      weight: 0.20
+      description: "No hallucinated credentials or integrations; admits gaps; pushes back on unsupported requests"

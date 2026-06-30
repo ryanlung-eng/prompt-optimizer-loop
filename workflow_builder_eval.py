@@ -25,7 +25,7 @@ import nest_asyncio
 nest_asyncio.apply()  # Databricks notebooks have their own event loop — this patches it
 
 # Point to this repo if it's mounted as a Databricks Repo
-sys.path.insert(0, "/Workspace/Repos/ryan.lung@ibotta.com/n8n")
+sys.path.insert(0, "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop")
 
 # COMMAND ----------
 
@@ -54,7 +54,7 @@ os.environ["DATABRICKS_TOKEN"] = _ctx.apiToken().get()
 from prompt_optimizer.config import load_config
 from prompt_optimizer.loop import run_optimization_loop
 
-cfg = load_config("/Workspace/Repos/ryan.lung@ibotta.com/n8n/config.yaml")
+cfg = load_config("/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop/config.yaml")
 
 # Widget overrides
 mode = dbutils.widgets.get("mode")

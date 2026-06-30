@@ -10,7 +10,12 @@ prompts:
     {{ $('Thread Formatter').item.json.conversation }}
 
     Credentials:
-    {{ $('Credential Parser').item.json.credentialContext }}
+    The user has the following credentials configured:
+    Gmail enabled, id: YzPY9a7o7oJjpL3j
+    Google Sheets enabled, id: 6LFdjEidf1KbbG0p
+    Google Sheets Trigger enabled, id: Z2l3ru55RTOmzlGB
+    Databricks enabled, id: "DNV5Ld0Um1SCcA04"
+    Jira enabled, id: "Q8l4d25oEqHPYX7H"
     Slack enabled, id: "qrX7FbQkvUaMRB0N"
 
     User ID:

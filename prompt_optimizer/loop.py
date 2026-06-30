@@ -222,7 +222,7 @@ async def run_optimization_loop(
 
     # --- Synthetic dataset ---
     console.rule("[dim]Synthetic dataset[/dim]")
-    inputs = await generate_dataset(config.synthetic_data)
+    inputs = await generate_dataset(config.synthetic_data, config.databricks)
     ood_count = sum(1 for i in inputs if i.is_ood)
     console.print(f"  Dataset: {len(inputs)} inputs ({len(inputs) - ood_count} in-dist, {ood_count} OOD)")
 
@@ -244,7 +244,7 @@ async def run_optimization_loop(
     # --- Initialize services ---
     evaluator = WorkflowEvaluator(config.databricks)
     judge = DatabricksJudge(config.databricks, config.judge)
-    optimizer = PromptOptimizer(config.optimizer, config.judge)
+    optimizer = PromptOptimizer(config.optimizer, config.judge, config.databricks)
     tracker = PromptTracker(config.databricks)
 
     if evaluate_only:

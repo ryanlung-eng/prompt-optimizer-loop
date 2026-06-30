@@ -14,26 +14,24 @@ n8n:
 databricks:
   workspace_url: "${DATABRICKS_HOST}"    # e.g. https://adb-xxx.azuredatabricks.net
   token: "${DATABRICKS_TOKEN}"
-  # Endpoint the workflow builder node actually calls — used for direct prompt eval
-  eval_endpoint: "databricks-meta-llama-3-1-70b-instruct"
-  # Separate endpoint (can be same) for the judge LLM
+  # General-purpose hosted LLM for synthetic data generation + prompt improvement
+  generation_endpoint: "databricks-claude-sonnet-4-6"
+  # LLM used to score eval results (can be same model or a stronger one)
   judge_endpoint: "databricks-meta-llama-3-1-70b-instruct"
+  # The actual KA endpoint being evaluated (has system prompt baked in)
+  eval_endpoint: "ka-bd1cb93b-endpoint"
   experiment_name: "/Users/ryan.lung@ibotta.com/n8n-prompt-optimizer"
   results_table: "main.prompt_optimizer.run_results"   # optional Delta table
 
 synthetic_data:
-  anthropic_api_key: "${ANTHROPIC_API_KEY}"
-  model: "claude-haiku-4-5-20251001"
-  # Samples per trigger×output combination (categories are auto-generated from the
-  # supported matrix in synthetic_data.py — the 'categories' key is ignored)
   num_samples_per_category: 4
   categories: []   # unused — matrix is defined in synthetic_data.py
-  cache_path: ".synthetic_dataset.json"
+  cache_path: "/dbfs/tmp/n8n-optimizer/synthetic_dataset.json"
 
 optimizer:
   score_threshold: 0.85
   max_iterations: 10
-  improvement_model: "claude-haiku-4-5-20251001"
+  improvement_model: "databricks-meta-llama-3-1-70b-instruct"  # unused — optimizer uses judge_endpoint
   candidates_per_iteration: 3
   worst_examples_k: 6        # Bottom-K fed to Haiku for failure analysis
   dry_run: false

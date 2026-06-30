@@ -6,9 +6,10 @@ import asyncio
 import json
 from typing import Dict, List, Tuple
 
-import anthropic
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-from .config import OptimizerConfig, JudgeConfig
+from .config import DatabricksConfig, OptimizerConfig, JudgeConfig
 from .judge import EvalResult
 
 _ANALYSIS_SYSTEM = """\
@@ -49,9 +50,35 @@ flowing instructions. Return ONLY the improved prompt text, nothing else.
 """
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+async def _db_call(
+    client: httpx.AsyncClient,
+    endpoint_url: str,
+    headers: dict,
+    system: str,
+    user: str,
+    max_tokens: int = 2048,
+) -> str:
+    resp = await client.post(
+        endpoint_url,
+        headers=headers,
+        json={
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+        },
+        timeout=90,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
 async def _analyze_failures(
-    client: anthropic.AsyncAnthropic,
-    model: str,
+    endpoint_url: str,
+    headers: dict,
     current_prompt: str,
     worst: List[EvalResult],
 ) -> dict:
@@ -65,46 +92,32 @@ async def _analyze_failures(
         + (f"Hallucinated details: {r.hallucinated_details}" if r.hallucinated_details else "")
         for r in worst
     )
-    prompt = (
-        f"Current system prompt:\n{current_prompt}\n\n"
-        f"Poor-performing examples:\n{examples}"
-    )
-    msg = await client.messages.create(
-        model=model,
-        max_tokens=1024,
-        system=_ANALYSIS_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return json.loads(msg.content[0].text)
+    user = f"Current system prompt:\n{current_prompt}\n\nPoor-performing examples:\n{examples}"
+    async with httpx.AsyncClient() as client:
+        raw = await _db_call(client, endpoint_url, headers, _ANALYSIS_SYSTEM, user, max_tokens=1024)
+    return json.loads(raw)
 
 
 async def _generate_candidate(
-    client: anthropic.AsyncAnthropic,
-    model: str,
+    endpoint_url: str,
+    headers: dict,
     current_prompt: str,
     analysis: dict,
     seed_variation: int,
 ) -> str:
     changes = "\n".join(f"- {c}" for c in analysis.get("recommended_changes", []))
-    # Vary the instruction slightly per candidate to get diverse proposals
     angle = ["directly", "step-by-step", "with examples"][seed_variation % 3]
-    prompt = (
-        f"Current prompt:\n{current_prompt}\n\n"
-        f"Apply these changes {angle}:\n{changes}"
-    )
-    msg = await client.messages.create(
-        model=model,
-        max_tokens=2048,
-        system=_IMPROVEMENT_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return msg.content[0].text.strip()
+    user = f"Current prompt:\n{current_prompt}\n\nApply these changes {angle}:\n{changes}"
+    async with httpx.AsyncClient() as client:
+        return (await _db_call(client, endpoint_url, headers, _IMPROVEMENT_SYSTEM, user)).strip()
 
 
 class PromptOptimizer:
-    def __init__(self, config: OptimizerConfig, judge_config: JudgeConfig):
+    def __init__(self, config: OptimizerConfig, judge_config: JudgeConfig, db_config: DatabricksConfig):
         self._config = config
         self._judge_config = judge_config
+        self._endpoint_url = f"{db_config.workspace_url}/serving-endpoints/{db_config.generation_endpoint}/invocations"
+        self._headers = {"Authorization": f"Bearer {db_config.token}", "Content-Type": "application/json"}
 
     def _worst_examples(self, results: List[EvalResult]) -> List[EvalResult]:
         sorted_results = sorted(results, key=lambda r: r.weighted_score)
@@ -121,15 +134,13 @@ class PromptOptimizer:
         Returns list of candidate prompt strings (not including the original).
         """
         worst = self._worst_examples(results)
-        client = anthropic.AsyncAnthropic(api_key=None)  # uses ANTHROPIC_API_KEY from env
 
         print(f"  Analyzing {len(worst)} failure examples for node '{node_name}'…")
-        analysis = await _analyze_failures(client, self._config.improvement_model, current_prompt, worst)
+        analysis = await _analyze_failures(self._endpoint_url, self._headers, current_prompt, worst)
         print(f"  Failure patterns: {analysis.get('failure_patterns', [])}")
 
         tasks = [
-            _generate_candidate(client, self._config.improvement_model,
-                                current_prompt, analysis, i)
+            _generate_candidate(self._endpoint_url, self._headers, current_prompt, analysis, i)
             for i in range(self._config.candidates_per_iteration)
         ]
         candidates = await asyncio.gather(*tasks, return_exceptions=True)

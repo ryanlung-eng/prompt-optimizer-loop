@@ -13,9 +13,10 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import List, Optional
 
-import anthropic
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-from .config import SyntheticDataConfig
+from .config import DatabricksConfig, SyntheticDataConfig
 
 # ------------------------------------------------------------------ #
 # Supported integrations manifest (single source of truth)           #
@@ -170,8 +171,35 @@ def _combo_user_prompt(trigger: str, output: str, approval: bool, n: int) -> str
     )
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+async def _db_call(
+    client: httpx.AsyncClient,
+    endpoint_url: str,
+    headers: dict,
+    system: str,
+    user: str,
+    max_tokens: int = 2048,
+) -> str:
+    resp = await client.post(
+        endpoint_url,
+        headers=headers,
+        json={
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+        },
+        timeout=90,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
 async def _generate_combo(
-    client: anthropic.AsyncAnthropic,
+    endpoint_url: str,
+    headers: dict,
     trigger: str,
     output: str,
     approval: bool,
@@ -180,21 +208,15 @@ async def _generate_combo(
     n = config.num_samples_per_category
     user_prompt = _combo_user_prompt(trigger, output, approval, n)
 
-    msg_resp = await client.messages.create(
-        model=config.model,
-        max_tokens=2048,
-        system=_GEN_SYSTEM,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    texts: List[str] = json.loads(msg_resp.content[0].text)
+    async with httpx.AsyncClient() as client:
+        raw_texts = await _db_call(client, endpoint_url, headers, _GEN_SYSTEM, user_prompt)
+        texts: List[str] = json.loads(raw_texts)
 
-    beh_resp = await client.messages.create(
-        model=config.model,
-        max_tokens=1024,
-        system=_BEHAVIOR_SYSTEM,
-        messages=[{"role": "user", "content": f"User messages:\n{json.dumps(texts, indent=2)}"}],
-    )
-    behaviors: List[str] = json.loads(beh_resp.content[0].text)
+        raw_behaviors = await _db_call(
+            client, endpoint_url, headers, _BEHAVIOR_SYSTEM,
+            f"User messages:\n{json.dumps(texts, indent=2)}", max_tokens=1024,
+        )
+        behaviors: List[str] = json.loads(raw_behaviors)
 
     category = _combo_label(trigger, output, approval)
     return [
@@ -212,7 +234,8 @@ async def _generate_combo(
 
 
 async def _generate_ood(
-    client: anthropic.AsyncAnthropic,
+    endpoint_url: str,
+    headers: dict,
     config: SyntheticDataConfig,
     n: int = 3,
 ) -> List[SyntheticInput]:
@@ -222,27 +245,20 @@ async def _generate_ood(
     for scenario in OOD_SCENARIOS:
         system = _OOD_SYSTEM.format(unsupported_list=scenario)
         try:
-            msg_resp = await client.messages.create(
-                model=config.model,
-                max_tokens=800,
-                system=system,
-                messages=[{
-                    "role": "user",
-                    "content": f"Generate {n} messages requesting automation around: {scenario}",
-                }],
-            )
-            texts: List[str] = json.loads(msg_resp.content[0].text)
+            async with httpx.AsyncClient() as client:
+                raw_texts = await _db_call(
+                    client, endpoint_url, headers, system,
+                    f"Generate {n} messages requesting automation around: {scenario}",
+                    max_tokens=800,
+                )
+                texts: List[str] = json.loads(raw_texts)
 
-            beh_resp = await client.messages.create(
-                model=config.model,
-                max_tokens=512,
-                system=_BEHAVIOR_SYSTEM,
-                messages=[{
-                    "role": "user",
-                    "content": f"User messages:\n{json.dumps(texts, indent=2)}",
-                }],
-            )
-            behaviors: List[str] = json.loads(beh_resp.content[0].text)
+                raw_behaviors = await _db_call(
+                    client, endpoint_url, headers, _BEHAVIOR_SYSTEM,
+                    f"User messages:\n{json.dumps(texts, indent=2)}",
+                    max_tokens=512,
+                )
+                behaviors: List[str] = json.loads(raw_behaviors)
 
             results.extend([
                 SyntheticInput(
@@ -266,7 +282,7 @@ async def _generate_ood(
 # Public entry point                                                  #
 # ------------------------------------------------------------------ #
 
-async def generate_dataset(config: SyntheticDataConfig) -> List[SyntheticInput]:
+async def generate_dataset(config: SyntheticDataConfig, db_config: DatabricksConfig) -> List[SyntheticInput]:
     """
     Generate the full dataset. Cached to disk — delete the cache file to regenerate.
     Returns inputs sorted so in-distribution come first, OOD at the end.
@@ -284,10 +300,11 @@ async def generate_dataset(config: SyntheticDataConfig) -> List[SyntheticInput]:
         f"  Generating synthetic dataset: {len(_COMBINATIONS)} trigger×output combinations "
         f"+ {len(OOD_SCENARIOS)} OOD scenarios…"
     )
-    client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+    endpoint_url = f"{db_config.workspace_url}/serving-endpoints/{db_config.generation_endpoint}/invocations"
+    headers = {"Authorization": f"Bearer {db_config.token}", "Content-Type": "application/json"}
 
     combo_tasks = [
-        _generate_combo(client, trigger, output, approval, config)
+        _generate_combo(endpoint_url, headers, trigger, output, approval, config)
         for trigger, output, approval in _COMBINATIONS
     ]
     combo_results = await asyncio.gather(*combo_tasks, return_exceptions=True)
@@ -301,8 +318,7 @@ async def generate_dataset(config: SyntheticDataConfig) -> List[SyntheticInput]:
             inputs.extend(result)
 
     print(f"  Generated {len(inputs)} in-distribution inputs. Now generating OOD…")
-    ood = await _generate_ood(client, config)
-    inputs.extend(ood)
+    ood = await _generate_ood(endpoint_url, headers, config)
 
     cache.write_text(json.dumps([i.to_dict() for i in inputs], indent=2))
     print(

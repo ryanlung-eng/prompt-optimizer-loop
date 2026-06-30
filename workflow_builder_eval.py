@@ -26,13 +26,11 @@ sys.path.insert(0, "/Workspace/Repos/ryan.lung@ibotta.com/n8n")
 # COMMAND ----------
 
 # MAGIC %md ## Configuration
-# MAGIC Secrets are read from a Databricks secret scope named `n8n-optimizer`.
-# MAGIC To create the scope + secrets:
+# MAGIC Only one secret needed — the n8n API key.
+# MAGIC Databricks host + token are pulled automatically from the cluster context.
 # MAGIC ```
 # MAGIC databricks secrets create-scope n8n-optimizer
-# MAGIC databricks secrets put-secret n8n-optimizer DATABRICKS_TOKEN   --string-value <pat>
-# MAGIC databricks secrets put-secret n8n-optimizer ANTHROPIC_API_KEY  --string-value <key>
-# MAGIC databricks secrets put-secret n8n-optimizer N8N_API_KEY        --string-value <key>
+# MAGIC databricks secrets put-secret n8n-optimizer N8N_API_KEY --string-value <key>
 # MAGIC ```
 
 # COMMAND ----------
@@ -45,14 +43,12 @@ dbutils.widgets.checkbox("dry_run", False, "Dry run (no n8n writes)")
 
 SECRET_SCOPE = "n8n-optimizer"
 
-os.environ["DATABRICKS_HOST"]   = spark.conf.get("spark.databricks.workspaceUrl",
-                                                   dbutils.notebook.entry_point
-                                                   .getDbutils().notebook().getContext()
-                                                   .browserHostName().get())
-os.environ["DATABRICKS_TOKEN"]  = dbutils.secrets.get(SECRET_SCOPE, "DATABRICKS_TOKEN")
-os.environ["ANTHROPIC_API_KEY"] = dbutils.secrets.get(SECRET_SCOPE, "ANTHROPIC_API_KEY")
-os.environ["N8N_BASE_URL"]      = "https://n8n.ops.int.staging.ibops.net"
-os.environ["N8N_API_KEY"]       = dbutils.secrets.get(SECRET_SCOPE, "N8N_API_KEY")
+# Pull host + token from cluster context — no secret needed
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+os.environ["DATABRICKS_HOST"]  = "https://" + _ctx.browserHostName().get()
+os.environ["DATABRICKS_TOKEN"] = _ctx.apiToken().get()
+os.environ["N8N_BASE_URL"]     = "https://n8n.ops.int.staging.ibops.net"
+os.environ["N8N_API_KEY"]      = dbutils.secrets.get(SECRET_SCOPE, "N8N_API_KEY")
 os.environ["N8N_WORKFLOW_ID"]   = "8hy6AFy4xdwqLNA4"
 
 # COMMAND ----------

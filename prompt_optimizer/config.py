@@ -25,16 +25,15 @@ class N8NConfig:
 class DatabricksConfig:
     workspace_url: str
     token: str
-    judge_endpoint: str
-    eval_endpoint: str
+    generation_endpoint: str   # general-purpose LLM for synthetic data + prompt improvement
+    judge_endpoint: str        # LLM used for scoring eval results
+    eval_endpoint: str         # the KA endpoint being evaluated
     experiment_name: str
     results_table: Optional[str] = None
 
 
 @dataclass
 class SyntheticDataConfig:
-    anthropic_api_key: str
-    model: str
     num_samples_per_category: int
     categories: List[str]
     cache_path: str = ".synthetic_dataset.json"
@@ -108,6 +107,7 @@ def load_config(path: str = "config.yaml") -> Config:
     databricks = DatabricksConfig(
         workspace_url=db["workspace_url"].rstrip("/"),
         token=db["token"],
+        generation_endpoint=db["generation_endpoint"],
         judge_endpoint=db["judge_endpoint"],
         eval_endpoint=db["eval_endpoint"],
         experiment_name=db["experiment_name"],
@@ -116,8 +116,6 @@ def load_config(path: str = "config.yaml") -> Config:
 
     sd = raw["synthetic_data"]
     synthetic_data = SyntheticDataConfig(
-        anthropic_api_key=sd["anthropic_api_key"],
-        model=sd["model"],
         num_samples_per_category=sd["num_samples_per_category"],
         categories=sd["categories"],
         cache_path=sd.get("cache_path", ".synthetic_dataset.json"),

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 import httpx
-from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
 
 from .config import DatabricksConfig, JudgeConfig, JudgeDimension
 from .native_assessments import fetch_assessments
@@ -214,7 +214,7 @@ class DatabricksJudge:
             "Content-Type": "application/json",
         }
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+    @retry(stop=stop_after_attempt(6), wait=wait_random_exponential(multiplier=1, min=4, max=60))
     async def _call(
         self,
         client: httpx.AsyncClient,

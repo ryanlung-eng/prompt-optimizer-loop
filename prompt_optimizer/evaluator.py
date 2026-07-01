@@ -15,12 +15,16 @@ import json
 from typing import Dict, List, Tuple
 
 import httpx
-from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
 
 from .config import DatabricksConfig
 from .synthetic_data import SyntheticInput
 
-_MAX_CONCURRENT = 10  # Cap concurrent Databricks calls
+# Multi-turn conversations mean each concurrent "slot" can burst up to
+# _MAX_TURNS sequential calls against the SAME KA endpoint, not just one —
+# so this needs to be lower than it would for a single-shot design, to avoid
+# tripping the endpoint's rate limit.
+_MAX_CONCURRENT = 4
 _MAX_TURNS = 4         # KA round-trips per test case before giving up
 
 # In real n8n, these three expressions are resolved by n8n's own expression
@@ -85,7 +89,10 @@ class WorkflowEvaluator:
             "Content-Type": "application/json",
         }
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+    # Rate limiting (429) needs much more room than a transient network blip —
+    # jittered backoff so concurrent slots don't all retry in lockstep and
+    # re-trip the same limit together.
+    @retry(stop=stop_after_attempt(6), wait=wait_random_exponential(multiplier=1, min=4, max=60))
     async def _call(
         self,
         client: httpx.AsyncClient,

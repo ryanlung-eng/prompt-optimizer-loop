@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
-from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
 
 from .config import DatabricksConfig, SyntheticDataConfig
 
@@ -184,7 +184,7 @@ def _combo_user_prompt(trigger: str, output: str, n: int) -> str:
     )
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+@retry(stop=stop_after_attempt(6), wait=wait_random_exponential(multiplier=1, min=4, max=60))
 async def _db_call(
     client: httpx.AsyncClient,
     endpoint_url: str,

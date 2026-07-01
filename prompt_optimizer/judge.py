@@ -21,6 +21,7 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .config import DatabricksConfig, JudgeConfig, JudgeDimension
 from .synthetic_data import SyntheticInput
+from .validator import StructuralResult, validate_workflow_json
 
 
 def _unwrap(e: Exception) -> Exception:
@@ -181,6 +182,7 @@ class EvalResult:
     hallucinated_details: List[str]
     overall_comment: str
     transcript: List[dict] = field(default_factory=list)
+    structural: StructuralResult = field(default_factory=StructuralResult)
     weighted_score: float = field(default=0.0, init=False)
 
     def __post_init__(self):
@@ -284,6 +286,7 @@ class DatabricksJudge:
             hallucinated_details=hallucinated,
             overall_comment=comment,
             transcript=transcript or [],
+            structural=validate_workflow_json(actual_response),
         )
         result.weighted_score = _weighted_score(scores, self._judge_config.dimensions)
         return result

@@ -61,6 +61,18 @@ def _print_score_table(
         "[bold]OVERALL[/bold]", "", "", f"[bold]{avg_overall:.3f}[/bold]", status
     )
 
+    # Deterministic structural check — did the KA actually produce valid n8n JSON,
+    # independent of the LLM judge's subjective read of the response text.
+    n = len(results)
+    converged = sum(1 for r in results if r.structural.is_json)
+    structurally_valid = sum(1 for r in results if r.structural.valid)
+    table.add_row(
+        "[dim]Converged to JSON[/dim]", "", "", f"[dim]{converged}/{n}[/dim]", ""
+    )
+    table.add_row(
+        "[dim]Structurally valid[/dim]", "", "", f"[dim]{structurally_valid}/{n}[/dim]", ""
+    )
+
     # OOD pushback summary row
     if ood:
         ood_refused = sum(1 for r in ood if r.scores.get("intent_understanding", 0) >= 0.7)
@@ -104,6 +116,15 @@ def _print_gap_report(results: List[EvalResult]) -> None:
     if low_honesty:
         cats = list(dict.fromkeys(r.input.category for r in low_honesty))
         console.print(f"\n[yellow]Categories with low honesty scores:[/yellow] {', '.join(cats)}")
+
+    structural_errors = [e for r in results for e in r.structural.errors]
+    if structural_errors:
+        unique_errors = list(dict.fromkeys(structural_errors))
+        console.print(f"\n[red]Structural JSON errors detected ({len(unique_errors)} unique):[/red]")
+        for e in unique_errors[:10]:
+            console.print(f"  • {e}")
+        if len(unique_errors) > 10:
+            console.print(f"  … and {len(unique_errors) - 10} more (see MLflow artifact)")
 
     if not ood_attempted and not all_hallucinations and not low_honesty:
         console.print("[green]No significant knowledge gaps detected.[/green]")

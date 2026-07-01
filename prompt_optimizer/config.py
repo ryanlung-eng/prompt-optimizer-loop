@@ -55,7 +55,6 @@ class JudgeConfig:
 class OptimizerConfig:
     score_threshold: float
     max_iterations: int
-    improvement_model: str
     candidates_per_iteration: int
     worst_examples_k: int = 5
 
@@ -119,7 +118,6 @@ def load_config(path: str = "config.yaml") -> Config:
     optimizer = OptimizerConfig(
         score_threshold=opt["score_threshold"],
         max_iterations=opt["max_iterations"],
-        improvement_model=opt["improvement_model"],
         candidates_per_iteration=opt["candidates_per_iteration"],
         worst_examples_k=opt.get("worst_examples_k", 5),
     )

@@ -36,7 +36,7 @@ databricks:
   # General-purpose hosted LLM for synthetic data generation + prompt improvement
   generation_endpoint: "databricks-claude-sonnet-4-6"
   # LLM used to score eval results (can be same model or a stronger one)
-  judge_endpoint: "databricks-meta-llama-3-1-70b-instruct"
+  judge_endpoint: "databricks-claude-sonnet-4-6"
   # The actual KA endpoint being evaluated (has system prompt baked in)
   eval_endpoint: "ka-bd1cb93b-endpoint"
   experiment_name: "/Users/ryan.lung@ibotta.com/n8n-prompt-optimizer"
@@ -50,7 +50,6 @@ synthetic_data:
 optimizer:
   score_threshold: 0.85
   max_iterations: 10
-  improvement_model: "databricks-meta-llama-3-1-70b-instruct"  # unused — optimizer uses judge_endpoint
   candidates_per_iteration: 3
   worst_examples_k: 6        # Bottom-K fed to Haiku for failure analysis
 

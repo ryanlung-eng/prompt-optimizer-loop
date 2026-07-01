@@ -180,6 +180,7 @@ class EvalResult:
     reasoning: Dict[str, str]
     hallucinated_details: List[str]
     overall_comment: str
+    transcript: List[dict] = field(default_factory=list)
     weighted_score: float = field(default=0.0, init=False)
 
     def __post_init__(self):
@@ -253,6 +254,7 @@ class DatabricksJudge:
         client: httpx.AsyncClient,
         inp: SyntheticInput,
         actual_response: str,
+        transcript: List[dict] = None,
     ) -> EvalResult:
         system = _JUDGE_SYSTEM_OOD if inp.is_ood else _JUDGE_SYSTEM_IN_DIST
         user = _JUDGE_USER_TEMPLATE.format(
@@ -281,20 +283,23 @@ class DatabricksJudge:
             reasoning=reasoning,
             hallucinated_details=hallucinated,
             overall_comment=comment,
+            transcript=transcript or [],
         )
         result.weighted_score = _weighted_score(scores, self._judge_config.dimensions)
         return result
 
     async def evaluate_batch(
         self,
-        inputs_and_responses: List[Tuple[SyntheticInput, str]],
+        inputs_and_responses: List[Tuple[SyntheticInput, str, List[dict]]],
     ) -> List[EvalResult]:
         """Evaluate a batch concurrently, respecting a semaphore to avoid rate limits."""
         sem = asyncio.Semaphore(8)
 
-        async def bounded(inp: SyntheticInput, resp: str) -> EvalResult:
+        async def bounded(inp: SyntheticInput, resp: str, transcript: List[dict]) -> EvalResult:
             async with sem:
                 async with httpx.AsyncClient() as client:
-                    return await self.evaluate_one(client, inp, resp)
+                    return await self.evaluate_one(client, inp, resp, transcript)
 
-        return await asyncio.gather(*[bounded(inp, resp) for inp, resp in inputs_and_responses])
+        return await asyncio.gather(
+            *[bounded(inp, resp, transcript) for inp, resp, transcript in inputs_and_responses]
+        )

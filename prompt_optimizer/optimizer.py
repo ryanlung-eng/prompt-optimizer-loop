@@ -104,6 +104,8 @@ async def _analyze_failures(
         f"Category: {r.input.category} | OOD: {r.input.is_ood} | Approval: {r.input.has_approval}\n"
         f"Expected: {r.input.expected_behavior}\n"
         f"Response: {r.actual_response}\n"
+        f"Turns to resolution: {len([t for t in r.transcript if t['role'] == 'ka'])} "
+        f"(never reached JSON if this hit the turn budget without the response starting with '{{')\n"
         f"Scores: {json.dumps(r.scores)}\n"
         f"Judge reasoning: {json.dumps(r.reasoning)}\n"
         + (f"Hallucinated details: {r.hallucinated_details}" if r.hallucinated_details else "")

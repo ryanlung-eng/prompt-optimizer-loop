@@ -100,6 +100,17 @@ class PromptTracker:
         mlflow.log_metric("score_p25", sorted_scores[len(sorted_scores) // 4])
         mlflow.log_metric("score_p75", sorted_scores[3 * len(sorted_scores) // 4])
 
+        # Did the KA actually converge to a JSON workflow, and how many turns did it take?
+        converged = [
+            r for r in results
+            if r.transcript and r.transcript[-1]["role"] == "ka"
+            and r.transcript[-1]["content"].strip().startswith("{")
+        ]
+        turn_counts = [len([t for t in r.transcript if t["role"] == "ka"]) for r in results if r.transcript]
+        mlflow.log_metric("pct_converged_to_json", len(converged) / max(len(results), 1))
+        if turn_counts:
+            mlflow.log_metric("avg_turns_to_resolution", sum(turn_counts) / len(turn_counts))
+
         # OOD-specific metrics
         ood = [r for r in results if r.input.is_ood]
         if ood:
@@ -125,6 +136,8 @@ class PromptTracker:
                 "hallucinated_details": r.hallucinated_details,
                 "weighted_score": r.weighted_score,
                 "overall_comment": r.overall_comment,
+                "transcript": r.transcript,
+                "turns": len([t for t in r.transcript if t["role"] == "ka"]),
             }
             for r in results
         ]

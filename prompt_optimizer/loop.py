@@ -130,6 +130,39 @@ def _print_gap_report(results: List[EvalResult]) -> None:
         console.print("[green]No significant knowledge gaps detected.[/green]")
 
 
+def _print_native_assessments(results: List[EvalResult]) -> None:
+    """
+    Aggregate the Databricks-native judges (retrieval_groundedness, safety,
+    Valid Workflow, etc. — whatever's configured on the KA endpoint) across
+    this batch. Best-effort: those judges run as production-monitoring
+    scorers and may not have finished computing when we fetched the trace —
+    a case missing from the coverage count isn't necessarily a bad score,
+    it may just not have been ready yet.
+    """
+    from collections import Counter, defaultdict
+
+    by_name: dict = defaultdict(Counter)
+    covered = 0
+    for r in results:
+        if r.native_assessments:
+            covered += 1
+        for name, value in r.native_assessments.items():
+            by_name[str(name)][str(value)] += 1
+
+    console.rule("[bold magenta]Native Databricks Judges[/bold magenta]")
+    console.print(f"  Coverage: {covered}/{len(results)} examples had assessments attached at fetch time")
+
+    if not by_name:
+        console.print("[yellow]No native assessments found — either none are configured on this "
+                       "endpoint, or none had finished computing yet.[/yellow]")
+        return
+
+    for name, counts in sorted(by_name.items()):
+        total = sum(counts.values())
+        breakdown = ", ".join(f"{v}: {n}/{total} ({n/total:.0%})" for v, n in counts.most_common())
+        console.print(f"  [cyan]{name}[/cyan] — {breakdown}")
+
+
 async def _evaluate_prompt(
     evaluator: WorkflowEvaluator,
     judge: DatabricksJudge,
@@ -174,6 +207,7 @@ async def _optimize_node(
         tracker.log_results(run, current_results, dim_names)
 
     _print_gap_report(current_results)
+    _print_native_assessments(current_results)
 
     if current_score >= config.optimizer.score_threshold:
         console.print(f"  [green]Score {current_score:.3f} ≥ threshold {config.optimizer.score_threshold}. No changes needed.[/green]")
@@ -263,6 +297,7 @@ async def run_optimization_loop(
             _print_score_table(node_name, 0, results, dim_names)
             all_results.extend(results)
         _print_gap_report(all_results)
+        _print_native_assessments(all_results)
         return
 
     # --- Optimization loop ---

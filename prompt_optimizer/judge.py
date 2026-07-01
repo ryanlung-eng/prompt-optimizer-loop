@@ -20,6 +20,7 @@ import httpx
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .config import DatabricksConfig, JudgeConfig, JudgeDimension
+from .native_assessments import fetch_assessments
 from .synthetic_data import SyntheticInput
 from .validator import StructuralResult, validate_workflow_json
 
@@ -183,6 +184,7 @@ class EvalResult:
     overall_comment: str
     transcript: List[dict] = field(default_factory=list)
     structural: StructuralResult = field(default_factory=StructuralResult)
+    native_assessments: dict = field(default_factory=dict)
     weighted_score: float = field(default=0.0, init=False)
 
     def __post_init__(self):
@@ -257,6 +259,7 @@ class DatabricksJudge:
         inp: SyntheticInput,
         actual_response: str,
         transcript: List[dict] = None,
+        trace_id: str = "",
     ) -> EvalResult:
         system = _JUDGE_SYSTEM_OOD if inp.is_ood else _JUDGE_SYSTEM_IN_DIST
         user = _JUDGE_USER_TEMPLATE.format(
@@ -278,6 +281,10 @@ class DatabricksJudge:
             hallucinated = []
             comment = f"Judge error: {cause}"
 
+        # mlflow.get_trace() is a blocking call — offload so it doesn't stall
+        # the event loop while other evaluations are running concurrently.
+        native = await asyncio.to_thread(fetch_assessments, self._config, trace_id)
+
         result = EvalResult(
             input=inp,
             actual_response=actual_response,
@@ -287,22 +294,24 @@ class DatabricksJudge:
             overall_comment=comment,
             transcript=transcript or [],
             structural=validate_workflow_json(actual_response),
+            native_assessments=native,
         )
         result.weighted_score = _weighted_score(scores, self._judge_config.dimensions)
         return result
 
     async def evaluate_batch(
         self,
-        inputs_and_responses: List[Tuple[SyntheticInput, str, List[dict]]],
+        inputs_and_responses: List[Tuple[SyntheticInput, str, List[dict], str]],
     ) -> List[EvalResult]:
         """Evaluate a batch concurrently, respecting a semaphore to avoid rate limits."""
         sem = asyncio.Semaphore(8)
 
-        async def bounded(inp: SyntheticInput, resp: str, transcript: List[dict]) -> EvalResult:
+        async def bounded(inp: SyntheticInput, resp: str, transcript: List[dict], trace_id: str) -> EvalResult:
             async with sem:
                 async with httpx.AsyncClient() as client:
-                    return await self.evaluate_one(client, inp, resp, transcript)
+                    return await self.evaluate_one(client, inp, resp, transcript, trace_id)
 
         return await asyncio.gather(
-            *[bounded(inp, resp, transcript) for inp, resp, transcript in inputs_and_responses]
+            *[bounded(inp, resp, transcript, trace_id)
+              for inp, resp, transcript, trace_id in inputs_and_responses]
         )

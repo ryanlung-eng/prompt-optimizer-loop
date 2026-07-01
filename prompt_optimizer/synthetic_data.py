@@ -333,7 +333,7 @@ async def generate_dataset(config: SyntheticDataConfig, db_config: DatabricksCon
         return inputs
 
     print(f"  Generating synthetic dataset: {len(_COMBINATIONS)} trigger×output combinations…")
-    endpoint_url = f"{db_config.workspace_url}/serving-endpoints/{db_config.generation_endpoint}/invocations"
+    endpoint_url = f"{db_config.workspace_url}/serving-endpoints/{db_config.fast_generation_endpoint}/invocations"
     headers = {"Authorization": f"Bearer {db_config.token}", "Content-Type": "application/json"}
 
     combo_tasks = [

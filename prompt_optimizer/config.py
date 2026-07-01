@@ -25,9 +25,10 @@ class N8NConfig:
 class DatabricksConfig:
     workspace_url: str
     token: str
-    generation_endpoint: str   # general-purpose LLM for synthetic data + prompt improvement
-    judge_endpoint: str        # LLM used for scoring eval results
-    eval_endpoint: str         # the KA endpoint being evaluated
+    generation_endpoint: str        # reasoning-heavy generation: prompt candidates + failure analysis
+    fast_generation_endpoint: str   # high-volume/low-reasoning: synthetic data + simulated-user replies
+    judge_endpoint: str             # LLM used for scoring eval results
+    eval_endpoint: str              # the KA endpoint being evaluated
     experiment_name: str
     results_table: Optional[str] = None
 
@@ -101,6 +102,7 @@ def load_config(path: str = "config.yaml") -> Config:
         workspace_url=db["workspace_url"].rstrip("/"),
         token=db["token"],
         generation_endpoint=db["generation_endpoint"],
+        fast_generation_endpoint=db["fast_generation_endpoint"],
         judge_endpoint=db["judge_endpoint"],
         eval_endpoint=db["eval_endpoint"],
         experiment_name=db["experiment_name"],

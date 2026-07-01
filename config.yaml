@@ -45,8 +45,11 @@ prompts:
 databricks:
   workspace_url: "${DATABRICKS_HOST}"    # e.g. https://adb-xxx.azuredatabricks.net
   token: "${DATABRICKS_TOKEN}"
-  # General-purpose hosted LLM for synthetic data generation + prompt improvement
+  # Reasoning-heavy generation: prompt candidates + failure analysis (optimizer.py)
   generation_endpoint: "databricks-claude-sonnet-4-6"
+  # High-volume/low-reasoning generation: synthetic data + simulated-user replies
+  # during multi-turn conversations — Haiku, to reduce load across endpoints
+  fast_generation_endpoint: "databricks-claude-haiku-4-5"
   # LLM used to score eval results (can be same model or a stronger one)
   judge_endpoint: "databricks-claude-sonnet-4-6"
   # The actual KA endpoint being evaluated (has system prompt baked in)

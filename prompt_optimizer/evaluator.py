@@ -82,7 +82,7 @@ class WorkflowEvaluator:
             f"{config.workspace_url}/serving-endpoints/{config.eval_endpoint}/invocations"
         )
         self._generation_url = (
-            f"{config.workspace_url}/serving-endpoints/{config.generation_endpoint}/invocations"
+            f"{config.workspace_url}/serving-endpoints/{config.fast_generation_endpoint}/invocations"
         )
         self._headers = {
             "Authorization": f"Bearer {config.token}",
@@ -111,8 +111,9 @@ class WorkflowEvaluator:
                      a Databricks Responses-style API. Confirmed via its own 400
                      error when sent "messages" instead.
           - False -> {"messages": [...]}  — standard chat-completions, used by
-                     generation_endpoint/judge_endpoint everywhere else in this
-                     codebase. Confirmed via this same 400-on-"input" error.
+                     fast_generation_endpoint/generation_endpoint/judge_endpoint
+                     everywhere else in this codebase. Confirmed via this same
+                     400-on-"input" error.
         Response parsing handles both "choices" (chat-completions) and "output"
         (Responses-style) shapes regardless of which format was sent, since
         that side was already verified working for both endpoints.

@@ -100,18 +100,33 @@ class WorkflowEvaluator:
         system_prompt: str,
         user_message: str,
         want_trace_id: bool = False,
+        use_responses_api: bool = False,
     ) -> Tuple[str, str]:
-        """Returns (content, trace_id). trace_id is "" unless want_trace_id and the
-        endpoint actually returned one — see x-mlflow-return-trace-id below."""
+        """
+        Returns (content, trace_id). trace_id is "" unless want_trace_id and the
+        endpoint actually returned one — see x-mlflow-return-trace-id below.
+
+        use_responses_api selects the request wire format:
+          - True  -> {"input": [...]}     — the KA endpoint (ka-bd1cb93b-endpoint),
+                     a Databricks Responses-style API. Confirmed via its own 400
+                     error when sent "messages" instead.
+          - False -> {"messages": [...]}  — standard chat-completions, used by
+                     generation_endpoint/judge_endpoint everywhere else in this
+                     codebase. Confirmed via this same 400-on-"input" error.
+        Response parsing handles both "choices" (chat-completions) and "output"
+        (Responses-style) shapes regardless of which format was sent, since
+        that side was already verified working for both endpoints.
+        """
         headers = dict(self._headers)
         if want_trace_id:
             headers["x-mlflow-return-trace-id"] = "true"
 
+        payload_key = "input" if use_responses_api else "messages"
         resp = await client.post(
             endpoint_url,
             headers=headers,
             json={
-                "input": [
+                payload_key: [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
@@ -127,17 +142,37 @@ class WorkflowEvaluator:
         body = resp.json()
         trace_id = (body.get("metadata") or {}).get("trace_id", "") if want_trace_id else ""
 
-        if "choices" in body:
-            return body["choices"][0]["message"]["content"], trace_id
-        if "output" in body:
-            for item in body["output"]:
-                if item.get("type") == "message":
-                    for block in item.get("content", []):
-                        if block.get("type") in ("output_text", "text") and block.get("text"):
-                            return block["text"], trace_id
-        raise ValueError(
-            f"Unrecognized response shape from {endpoint_url}: {json.dumps(body)[:1500]}"
-        )
+        # Every dict access below uses `... or {}`/`... or []` rather than
+        # dict.get(key, default), since get()'s default only applies when the
+        # key is ABSENT — a key present with an explicit null value (which we've
+        # already seen from these endpoints, e.g. "metadata": null) still
+        # returns None and crashes a chained .get()/subscript otherwise.
+        content = None
+        choices = body.get("choices") or []
+        if choices and isinstance(choices[0], dict):
+            content = (choices[0].get("message") or {}).get("content")
+        else:
+            for item in body.get("output") or []:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                for block in item.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") in ("output_text", "text") and block.get("text"):
+                        content = block["text"]
+                        break
+                if content:
+                    break
+
+        if content is None:
+            raise ValueError(
+                f"Unrecognized response shape from {endpoint_url}: {json.dumps(body)[:1500]}"
+            )
+        if not content.strip():
+            finish_reason = choices[0].get("finish_reason") if choices and isinstance(choices[0], dict) else None
+            raise ValueError(
+                f"Empty content from {endpoint_url}. finish_reason={finish_reason!r}. "
+                f"Raw response: {json.dumps(body)[:1500]}"
+            )
+        return content, trace_id
 
     async def _simulate_user_reply(
         self, client: httpx.AsyncClient, original_text: str, ka_question: str
@@ -164,7 +199,8 @@ class WorkflowEvaluator:
         for turn in range(_MAX_TURNS):
             resolved = _resolve_prompt(system_prompt, conversation, inp)
             response, trace_id = await self._call(
-                client, self._endpoint_url, resolved, latest_user_turn, want_trace_id=True
+                client, self._endpoint_url, resolved, latest_user_turn,
+                want_trace_id=True, use_responses_api=True,
             )
             transcript.append({"role": "ka", "content": response})
 

@@ -239,11 +239,17 @@ class DatabricksJudge:
                 f"{resp.status_code} from {self._endpoint_url}: {resp.text[:1500]}"
             )
         body = resp.json()
-        content = body["choices"][0]["message"]["content"]
+        # dict.get(key, default) only falls back to default when the key is
+        # ABSENT — a key present with an explicit null (seen from these
+        # Databricks endpoints, e.g. "metadata": null) still returns None and
+        # crashes a chained .get()/subscript otherwise, so guard every step.
+        choices = body.get("choices") or []
+        content = (choices[0].get("message") or {}).get("content") if choices and isinstance(choices[0], dict) else None
         if not content or not content.strip():
+            finish_reason = choices[0].get("finish_reason") if choices and isinstance(choices[0], dict) else None
             raise ValueError(
-                f"Empty content from {self._endpoint_url}. "
-                f"finish_reason={body['choices'][0].get('finish_reason')!r}. "
+                f"Empty or missing content from {self._endpoint_url}. "
+                f"finish_reason={finish_reason!r}. "
                 f"Raw response: {json.dumps(body)[:1500]}"
             )
         # Extract the outermost {...} object — handles stray prose or fences

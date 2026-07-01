@@ -175,7 +175,10 @@ class DatabricksJudge:
             },
             timeout=60,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise ValueError(
+                f"{resp.status_code} from {self._endpoint_url}: {resp.text[:1500]}"
+            )
         content = resp.json()["choices"][0]["message"]["content"]
         # Strip markdown fences if the model wraps JSON anyway
         content = content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -200,11 +203,12 @@ class DatabricksJudge:
             hallucinated = parsed.get("hallucinated_details", [])
             comment = parsed.get("overall_comment", "")
         except Exception as e:
-            print(f"  Warning: judge failed for '{inp.text[:60]}…': {_unwrap(e)}")
+            cause = _unwrap(e)
+            print(f"  Warning: judge failed for '{inp.text[:60]}…': {cause}")
             scores = {d.name: 0.0 for d in self._judge_config.dimensions}
-            reasoning = {d.name: f"Judge error: {e}" for d in self._judge_config.dimensions}
+            reasoning = {d.name: f"Judge error: {cause}" for d in self._judge_config.dimensions}
             hallucinated = []
-            comment = f"Judge error: {e}"
+            comment = f"Judge error: {cause}"
 
         result = EvalResult(
             input=inp,

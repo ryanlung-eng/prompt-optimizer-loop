@@ -171,7 +171,7 @@ def _combo_user_prompt(trigger: str, output: str, approval: bool, n: int) -> str
         f"Generate {n} messages. The automation is: triggered by {trigger.upper()}, "
         f"outputs to {output.upper().replace('_', ' ')}.{approval_note}\n\n"
         "Remember: include EVERY detail so the builder needs zero clarification. "
-        "Vary the business scenario across the {n} messages."
+        f"Vary the business scenario across the {n} messages."
     )
 
 

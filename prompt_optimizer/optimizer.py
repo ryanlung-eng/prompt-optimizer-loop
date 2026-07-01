@@ -76,7 +76,8 @@ async def _db_call(
         },
         timeout=90,
     )
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        raise ValueError(f"{resp.status_code} from {endpoint_url}: {resp.text[:1500]}")
     body = resp.json()
     content = body["choices"][0]["message"]["content"]
     if not content or not content.strip():
@@ -148,7 +149,11 @@ class PromptOptimizer:
         worst = self._worst_examples(results)
 
         print(f"  Analyzing {len(worst)} failure examples for node '{node_name}'…")
-        analysis = await _analyze_failures(self._endpoint_url, self._headers, current_prompt, worst)
+        try:
+            analysis = await _analyze_failures(self._endpoint_url, self._headers, current_prompt, worst)
+        except Exception as e:
+            print(f"  Warning: failure analysis failed: {_unwrap(e)}")
+            return []
         print(f"  Failure patterns: {analysis.get('failure_patterns', [])}")
 
         tasks = [

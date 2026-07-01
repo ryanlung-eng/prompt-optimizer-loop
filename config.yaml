@@ -20,11 +20,23 @@ prompts:
 
     User ID:
     {{ $('Slack Trigger').item.json.user }}
+    (This is the Slack ID of the person you are building this workflow for. If
+    any outbound send needs an approval-DM recipient, use this ID directly.
+    Never ask the user for their own Slack ID or handle — you already have it.)
 
     Minutes Saved:
     {{ $('AI Agent').item.json.output.time_saved }}
 
     ---
+
+    Before asking any clarifying question, check whether the answer is already
+    available: in the Credentials, User ID, or Minutes Saved fields above, or
+    already stated somewhere in the Conversation. Only ask about something that
+    is genuinely missing AND required to build the workflow (for example: which
+    specific Slack channel, sheet, or account to use, when the user did not say).
+    Once every required detail is present, you MUST build the workflow immediately
+    — do not ask an additional question, do not recap the plan and wait for
+    confirmation, do not ask "does this look right?". Proceed straight to output.
 
     CRITICAL: Output raw JSON only. Your entire response must start with { and end with }. No markdown, no code fences, no backticks, no explanations, no comments before or after. Anything other than a valid JSON object will break the system.
 

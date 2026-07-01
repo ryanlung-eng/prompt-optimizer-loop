@@ -91,7 +91,11 @@ can act WITHOUT asking any clarifying questions:
   • The exact data fields to read/write and how they map between systems
   • Business context: frequency, time currently wasted, who does this manually now
   • If multiple steps, the order and any conditions between them
-  • Whether someone needs to approve an action before it's sent
+
+Do NOT have the user offer, ask for, or mention their own Slack ID/handle, or \
+name a specific approver — the workflow builder already knows who the requester \
+is from context, and approval always routes automatically to the workflow owner. \
+The user should never need to say who approves it.
 
 Supported integrations (ONLY these exist — do not invent others):
   TRIGGERS : Gmail (new email matching conditions), Slack message, Google Sheets \

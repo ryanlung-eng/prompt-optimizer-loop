@@ -170,7 +170,7 @@ class DatabricksJudge:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "max_tokens": 1200,
+                "max_tokens": 2048,
                 "temperature": 0.0,
             },
             timeout=60,
@@ -179,10 +179,20 @@ class DatabricksJudge:
             raise ValueError(
                 f"{resp.status_code} from {self._endpoint_url}: {resp.text[:1500]}"
             )
-        content = resp.json()["choices"][0]["message"]["content"]
-        # Strip markdown fences if the model wraps JSON anyway
-        content = content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        return json.loads(content)
+        body = resp.json()
+        content = body["choices"][0]["message"]["content"]
+        if not content or not content.strip():
+            raise ValueError(
+                f"Empty content from {self._endpoint_url}. "
+                f"finish_reason={body['choices'][0].get('finish_reason')!r}. "
+                f"Raw response: {json.dumps(body)[:1500]}"
+            )
+        # Extract the outermost {...} object — handles stray prose or fences
+        # anywhere around the JSON, not just at the exact string boundaries.
+        start, end = content.find("{"), content.rfind("}")
+        if start == -1 or end == -1 or end < start:
+            raise ValueError(f"No JSON object found in judge response: {content[:1500]}")
+        return json.loads(content[start:end + 1])
 
     async def evaluate_one(
         self,

@@ -108,7 +108,12 @@ async def _analyze_failures(
     user = f"Current system prompt:\n{current_prompt}\n\nPoor-performing examples:\n{examples}"
     async with httpx.AsyncClient() as client:
         raw = await _db_call(client, endpoint_url, headers, _ANALYSIS_SYSTEM, user, max_tokens=2048)
-    return json.loads(raw)
+    # Extract the outermost {...} object — handles stray prose or fences
+    # anywhere around the JSON, not just at the exact string boundaries.
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError(f"No JSON object found in analysis response: {raw[:1500]}")
+    return json.loads(raw[start:end + 1])
 
 
 async def _generate_candidate(

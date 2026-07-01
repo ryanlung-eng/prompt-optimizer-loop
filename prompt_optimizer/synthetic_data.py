@@ -197,7 +197,8 @@ async def _db_call(
         },
         timeout=90,
     )
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        raise ValueError(f"{resp.status_code} from {endpoint_url}: {resp.text[:1500]}")
     body = resp.json()
     content = body["choices"][0]["message"]["content"]
     if not content or not content.strip():
@@ -206,7 +207,13 @@ async def _db_call(
             f"finish_reason={body['choices'][0].get('finish_reason')!r}. "
             f"Raw response: {json.dumps(body)[:1500]}"
         )
-    return content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    # Extract the outermost [...] array — handles stray prose or fences
+    # anywhere around the JSON, not just at the exact string boundaries.
+    # Every caller of _db_call in this module expects a JSON array.
+    start, end = content.find("["), content.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError(f"No JSON array found in response: {content[:1500]}")
+    return content[start:end + 1]
 
 
 async def _generate_combo(

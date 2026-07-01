@@ -322,10 +322,7 @@ async def generate_dataset(config: SyntheticDataConfig, db_config: DatabricksCon
         print(f"  {len(inputs)} total inputs ({len(inputs) - ood_count} in-dist, {ood_count} OOD)")
         return inputs
 
-    print(
-        f"  Generating synthetic dataset: {len(_COMBINATIONS)} trigger×output combinations "
-        f"+ {len(OOD_SCENARIOS)} OOD scenarios…"
-    )
+    print(f"  Generating synthetic dataset: {len(_COMBINATIONS)} trigger×output combinations…")
     endpoint_url = f"{db_config.workspace_url}/serving-endpoints/{db_config.generation_endpoint}/invocations"
     headers = {"Authorization": f"Bearer {db_config.token}", "Content-Type": "application/json"}
 
@@ -343,13 +340,9 @@ async def generate_dataset(config: SyntheticDataConfig, db_config: DatabricksCon
         else:
             inputs.extend(result)
 
-    print(f"  Generated {len(inputs)} in-distribution inputs. Now generating OOD…")
-    ood = await _generate_ood(endpoint_url, headers, config)
-    inputs.extend(ood)
-
+    # OOD refusal is the earlier conversation node's job, not Workflow Builder's —
+    # it should never even reach this node. _generate_ood/OOD_SCENARIOS are kept
+    # in this module, unused, for whenever that node gets its own optimizer.
     cache.write_text(json.dumps([i.to_dict() for i in inputs], indent=2))
-    print(
-        f"  Total: {len(inputs)} inputs "
-        f"({len(inputs) - len(ood)} in-dist, {len(ood)} OOD) → cached to {cache}"
-    )
+    print(f"  Total: {len(inputs)} inputs → cached to {cache}")
     return inputs

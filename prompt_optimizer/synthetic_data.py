@@ -48,29 +48,29 @@ OOD_SCENARIOS = [
     "DocuSign envelope completed",
 ]
 
-# All in-distribution combinations to cover
-# (trigger, output, with_approval)
+# All in-distribution combinations to cover. Approval is derived, not stored:
+# every outbound send (slack_message, email) always requires it, unconditionally.
+# sheets_update writes data rather than sending a message, so it never does.
 _COMBINATIONS = [
     # Cron-triggered
-    ("cron",   "slack_message",  False),
-    ("cron",   "email",          False),
-    ("cron",   "sheets_update",  False),
+    ("cron",   "slack_message"),
+    ("cron",   "email"),
+    ("cron",   "sheets_update"),
     # Gmail-triggered
-    ("gmail",  "slack_message",  False),
-    ("gmail",  "sheets_update",  False),
-    ("gmail",  "email",          True),   # forward/reply needs approval
+    ("gmail",  "slack_message"),
+    ("gmail",  "sheets_update"),
+    ("gmail",  "email"),
     # Slack-triggered
-    ("slack",  "sheets_update",  False),
-    ("slack",  "email",          True),
-    ("slack",  "slack_message",  False),  # cross-channel post
+    ("slack",  "sheets_update"),
+    ("slack",  "email"),
+    ("slack",  "slack_message"),
     # Jira-triggered
-    ("jira",   "slack_message",  False),
-    ("jira",   "email",          True),
-    ("jira",   "sheets_update",  False),
+    ("jira",   "slack_message"),
+    ("jira",   "email"),
+    ("jira",   "sheets_update"),
     # Sheets-triggered
-    ("sheets", "slack_message",  False),
-    ("sheets", "email",          True),
-    ("sheets", "slack_message",  True),   # approval before posting to Slack
+    ("sheets", "slack_message"),
+    ("sheets", "email"),
 ]
 
 # ------------------------------------------------------------------ #
@@ -96,8 +96,10 @@ Supported integrations (ONLY these exist — do not invent others):
   TRIGGERS : Gmail (new email matching conditions), Slack message, Google Sheets \
 (new/updated row), Jira issue event, Cron/Schedule
   OUTPUTS  : Send Slack message to a channel, Send Gmail, Update Google Sheets row
-  APPROVAL : A Slack approval queue can gate any outbound action — specify who \
-the approver(s) are
+  APPROVAL : Every Slack message or email send is MANDATORY-approved — the \
+requester automatically gets a Slack DM with Approve/Deny buttons and a preview \
+before it sends. This is not optional and the user never asks for it themselves. \
+Sheets updates are not messages sent to a person, so they do not go through approval.
 
 Tone: conversational Slack DM, may have mild typos, 3–10 sentences.
 Return ONLY a valid JSON array of strings, no other text."""
@@ -157,15 +159,16 @@ class SyntheticInput:
 # Generation helpers                                                  #
 # ------------------------------------------------------------------ #
 
-def _combo_label(trigger: str, output: str, approval: bool) -> str:
-    label = f"{trigger}_to_{output}"
-    return f"{label}_with_approval" if approval else label
+def _combo_label(trigger: str, output: str) -> str:
+    return f"{trigger}_to_{output}"
 
 
-def _combo_user_prompt(trigger: str, output: str, approval: bool, n: int) -> str:
+def _combo_user_prompt(trigger: str, output: str, n: int) -> str:
     approval_note = (
-        " Include an explicit Slack approval gate (with named approver) "
-        "before the outbound action is taken." if approval else ""
+        " The requester will automatically get a Slack approval DM (Approve/Deny "
+        "with a preview) before this send fires — mention that as expected behavior, "
+        "not something the user needs to ask for."
+        if output in OUTBOUND_OUTPUTS else ""
     )
     return (
         f"Generate {n} messages. The automation is: triggered by {trigger.upper()}, "
@@ -221,11 +224,11 @@ async def _generate_combo(
     headers: dict,
     trigger: str,
     output: str,
-    approval: bool,
     config: SyntheticDataConfig,
 ) -> List[SyntheticInput]:
     n = config.num_samples_per_category
-    user_prompt = _combo_user_prompt(trigger, output, approval, n)
+    approval = output in OUTBOUND_OUTPUTS
+    user_prompt = _combo_user_prompt(trigger, output, n)
 
     async with httpx.AsyncClient() as client:
         raw_texts = await _db_call(client, endpoint_url, headers, _GEN_SYSTEM, user_prompt)
@@ -237,7 +240,7 @@ async def _generate_combo(
         )
         behaviors: List[str] = json.loads(raw_behaviors)
 
-    category = _combo_label(trigger, output, approval)
+    category = _combo_label(trigger, output)
     return [
         SyntheticInput(
             text=t,
@@ -324,14 +327,14 @@ async def generate_dataset(config: SyntheticDataConfig, db_config: DatabricksCon
     headers = {"Authorization": f"Bearer {db_config.token}", "Content-Type": "application/json"}
 
     combo_tasks = [
-        _generate_combo(endpoint_url, headers, trigger, output, approval, config)
-        for trigger, output, approval in _COMBINATIONS
+        _generate_combo(endpoint_url, headers, trigger, output, config)
+        for trigger, output in _COMBINATIONS
     ]
     combo_results = await asyncio.gather(*combo_tasks, return_exceptions=True)
 
     inputs: List[SyntheticInput] = []
-    for (trigger, output, approval), result in zip(_COMBINATIONS, combo_results):
-        label = _combo_label(trigger, output, approval)
+    for (trigger, output), result in zip(_COMBINATIONS, combo_results):
+        label = _combo_label(trigger, output)
         if isinstance(result, Exception):
             print(f"  Warning: failed to generate combo '{label}': {_unwrap(result)}")
         else:

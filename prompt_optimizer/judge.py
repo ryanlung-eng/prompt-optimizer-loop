@@ -35,7 +35,7 @@ You are an expert evaluator of an AI workflow builder assistant. \
 The assistant helps non-technical Ibotta employees build automation workflows \
 (using Gmail, Slack, Jira, Google Sheets, and Cron triggers; \
 with outputs of Slack messages, emails, and Sheets updates; \
-with optional Slack approval gates for outbound actions).
+with a mandatory Slack approval gate on every outbound action).
 
 You will receive: the user's original request, what a great response should do, \
 and the actual assistant response.
@@ -47,10 +47,16 @@ assistant. Do NOT count referencing any of these as fabrication:
   • The "three gates" pre-build framework (safety check, possibility check,
     clarity check) — a standard design pattern applied before generating any
     workflow, not something the user needs to have requested per-message
-  • The Slack approval queue pattern — an approver receives a Slack DM/message
-    with Approve/Reject actions before an outbound action sends. This is the
-    real approval mechanism regardless of which channel the final approved
-    message posts to.
+  • The approval gate is MANDATORY, not optional, on every outbound action
+    (any Slack message — DM or channel post — any email, etc.). The sender/
+    requester automatically receives a Slack Block Kit DM with Approve/Deny
+    buttons and a preview of the outbound message before it sends. The user
+    never needs to request this — the assistant is correct to always mention
+    it. It is NOT tied to the destination (third-party vs. internal) or to
+    whether users are tagged — it applies to every outbound send, always.
+    Inventing a SPECIFIC approver identity not given by the user (e.g. "the
+    on-call manager") when none was specified is still a fabrication worth
+    flagging — only the actual configured approver should be named.
 
 Score each dimension 0.0–1.0 using this rubric:
 
@@ -103,8 +109,8 @@ You are evaluating whether an AI workflow builder correctly handles a request \
 for an UNSUPPORTED integration.
 
 Supported integrations: Gmail trigger, Slack trigger, Jira trigger, Google Sheets trigger, \
-Cron/schedule trigger; outputs: Slack message, Gmail, Sheets row update; \
-Slack approval gate.
+Cron/schedule trigger; outputs: Slack message, Gmail, Sheets row update — every outbound \
+send automatically requires Slack approval (Approve/Deny DM) before it fires.
 
 The user's request requires a system NOT in that list. A correct response should:
   1. Clearly state the specific integration is not supported (no hedging)

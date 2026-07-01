@@ -23,10 +23,6 @@ _CONVERSATION_EXPR = "{{ $('Thread Formatter').item.json.conversation }}"
 _USER_ID_EXPR = "{{ $('Slack Trigger').item.json.user }}"
 _TIME_SAVED_EXPR = "{{ $('AI Agent').item.json.output.time_saved }}"
 
-# The trigger turn n8n sends alongside the resolved system prompt. Unverified
-# against the real invocation — flag to Ryan if this doesn't match production.
-_TRIGGER_MESSAGE = "Build the workflow."
-
 
 def _resolve_prompt(system_prompt: str, inp: SyntheticInput) -> str:
     return (
@@ -108,7 +104,7 @@ class WorkflowEvaluator:
                 async with httpx.AsyncClient() as client:
                     try:
                         resolved = _resolve_prompt(system_prompt, inp)
-                        response = await self._call(client, resolved, _TRIGGER_MESSAGE)
+                        response = await self._call(client, resolved, inp.text)
                     except Exception as e:
                         cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
                         print(f"  Warning: eval failed for '{inp.text[:60]}…': {cause}")

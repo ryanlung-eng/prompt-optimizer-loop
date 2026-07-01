@@ -14,6 +14,28 @@ from .synthetic_data import SyntheticInput
 
 _MAX_CONCURRENT = 10  # Cap concurrent Databricks calls
 
+# In real n8n, these three expressions are resolved by n8n's own expression
+# engine before the LLM ever sees the prompt — the model never sees literal
+# "{{ }}" syntax in production. We resolve the same three here so the eval
+# harness matches what the KA actually receives at runtime.
+_SYNTHETIC_SLACK_USER_ID = "U0EVAL0001"
+_CONVERSATION_EXPR = "{{ $('Thread Formatter').item.json.conversation }}"
+_USER_ID_EXPR = "{{ $('Slack Trigger').item.json.user }}"
+_TIME_SAVED_EXPR = "{{ $('AI Agent').item.json.output.time_saved }}"
+
+# The trigger turn n8n sends alongside the resolved system prompt. Unverified
+# against the real invocation — flag to Ryan if this doesn't match production.
+_TRIGGER_MESSAGE = "Build the workflow."
+
+
+def _resolve_prompt(system_prompt: str, inp: SyntheticInput) -> str:
+    return (
+        system_prompt
+        .replace(_CONVERSATION_EXPR, inp.text)
+        .replace(_USER_ID_EXPR, _SYNTHETIC_SLACK_USER_ID)
+        .replace(_TIME_SAVED_EXPR, str(inp.time_saved_minutes))
+    )
+
 
 class WorkflowEvaluator:
     """
@@ -85,7 +107,8 @@ class WorkflowEvaluator:
             async with sem:
                 async with httpx.AsyncClient() as client:
                     try:
-                        response = await self._call(client, system_prompt, inp.text)
+                        resolved = _resolve_prompt(system_prompt, inp)
+                        response = await self._call(client, resolved, _TRIGGER_MESSAGE)
                     except Exception as e:
                         cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
                         print(f"  Warning: eval failed for '{inp.text[:60]}…': {cause}")

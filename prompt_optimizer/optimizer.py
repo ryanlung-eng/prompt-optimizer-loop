@@ -22,9 +22,11 @@ non-technical Ibotta employees automate tasks using n8n.
 
 Supported triggers: Gmail, Slack, Jira, Google Sheets, Cron/Schedule.
 Supported outputs: Send Slack message, Send Gmail, Update Google Sheets row.
-Mandatory approval gate: every outbound action automatically sends the requester
-a Slack DM with Approve/Deny buttons and a message preview before it fires. This
-is not optional and not something the user needs to request.
+Mandatory approval gate: every Slack message or email send automatically sends
+the WORKFLOW OWNER (not whoever/whatever triggered the automation) a Slack DM
+with Approve/Deny buttons and a message preview before it fires. Not optional,
+not something the user needs to request. Google Sheets updates never require
+approval — no message is sent to a person.
 
 You will receive:
 1. The current system prompt

@@ -43,20 +43,26 @@ and the actual assistant response.
 KNOWN PLATFORM FEATURES — the assistant has access to a knowledge base you do
 NOT see. These are real, documented parts of the system, not invented by the
 assistant. Do NOT count referencing any of these as fabrication:
-  • n8n's built-in Insights dashboard, which tracks automation time saved
+  • n8n's built-in Insights dashboard, which tracks automation time saved. The
+    assistant is given a pre-computed time-saved estimate for each workflow
+    (from an upstream step) and is expected to reference/log it for this
+    dashboard — this is not an invented prerequisite step.
   • The "three gates" pre-build framework (safety check, possibility check,
     clarity check) — a standard design pattern applied before generating any
     workflow, not something the user needs to have requested per-message
-  • The approval gate is MANDATORY, not optional, on every outbound action
-    (any Slack message — DM or channel post — any email, etc.). The sender/
-    requester automatically receives a Slack Block Kit DM with Approve/Deny
-    buttons and a preview of the outbound message before it sends. The user
-    never needs to request this — the assistant is correct to always mention
-    it. It is NOT tied to the destination (third-party vs. internal) or to
-    whether users are tagged — it applies to every outbound send, always.
-    Inventing a SPECIFIC approver identity not given by the user (e.g. "the
-    on-call manager") when none was specified is still a fabrication worth
-    flagging — only the actual configured approver should be named.
+  • The approval gate is MANDATORY, not optional, on every outbound send of a
+    Slack message or email (DM or channel post, any recipient). It is NEVER
+    required for a Google Sheets update alone — updating a sheet is not
+    sending a message to a person. The approval DM goes to the WORKFLOW
+    OWNER — the person who built/owns the workflow — NOT the person who
+    triggered the automation or whoever the outbound message is about. If the
+    trigger event and the workflow owner are different people (e.g. a Slack
+    message from someone else triggers the workflow), the approval DM still
+    goes to the owner, not the trigger's actor. Claiming it goes to "the
+    person who triggered it" is a fabrication; claiming it goes to the owner
+    is correct. Inventing a SPECIFIC approver identity beyond "the workflow
+    owner" (e.g. "the on-call manager") when none was specified is also a
+    fabrication worth flagging.
 
 Score each dimension 0.0–1.0 using this rubric:
 
@@ -109,8 +115,8 @@ You are evaluating whether an AI workflow builder correctly handles a request \
 for an UNSUPPORTED integration.
 
 Supported integrations: Gmail trigger, Slack trigger, Jira trigger, Google Sheets trigger, \
-Cron/schedule trigger; outputs: Slack message, Gmail, Sheets row update — every outbound \
-send automatically requires Slack approval (Approve/Deny DM) before it fires.
+Cron/schedule trigger; outputs: Slack message, Gmail (both automatically require a Slack \
+Approve/Deny DM to the workflow owner before sending), Sheets row update (no approval needed).
 
 The user's request requires a system NOT in that list. A correct response should:
   1. Clearly state the specific integration is not supported (no hedging)

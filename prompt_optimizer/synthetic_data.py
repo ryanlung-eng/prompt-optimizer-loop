@@ -9,6 +9,7 @@ asking clarifying questions.
 """
 import asyncio
 import json
+import random
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import List, Optional
@@ -146,6 +147,7 @@ class SyntheticInput:
     has_approval: bool
     is_ood: bool
     expected_behavior: str
+    time_saved_minutes: int = 10   # matches the real "AI Agent" node's pre-computed estimate
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -250,6 +252,7 @@ async def _generate_combo(
             has_approval=approval,
             is_ood=False,
             expected_behavior=b,
+            time_saved_minutes=random.randint(5, 60),
         )
         for t, b in zip(texts, behaviors)
     ]

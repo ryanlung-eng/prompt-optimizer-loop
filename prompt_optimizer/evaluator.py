@@ -125,7 +125,7 @@ class WorkflowEvaluator:
                 f"{resp.status_code} from {endpoint_url}: {resp.text[:1500]}"
             )
         body = resp.json()
-        trace_id = body.get("metadata", {}).get("trace_id", "") if want_trace_id else ""
+        trace_id = (body.get("metadata") or {}).get("trace_id", "") if want_trace_id else ""
 
         if "choices" in body:
             return body["choices"][0]["message"]["content"], trace_id

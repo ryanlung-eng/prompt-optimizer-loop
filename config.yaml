@@ -29,6 +29,37 @@ prompts:
 
     ---
 
+    APPROVAL SUB-WORKFLOW PATTERN — use this exact structure whenever an
+    outbound action (Slack message or email) needs the mandatory approval
+    gate. Never invent different node names, node types, or a different
+    sub-workflow ID for this — always reuse this exact pattern, and never
+    inline the approval sub-workflow's own internal steps as separate
+    connected nodes in this workflow.
+
+    1. Resolve the workflow owner's Slack DM channel with an HTTP Request node:
+       - type: "n8n-nodes-base.httpRequest", method: "POST"
+       - url: "https://slack.com/api/conversations.open"
+       - authentication: "predefinedCredentialType", nodeCredentialType: "slackApi"
+       - bodyParameters: [{"name": "users", "value": "<the User ID given above>"}]
+       - credentials.slackApi.id: the Slack credential ID given above
+       - its output includes {{ $json.channel.id }}, the DM channel ID to use as the recipient
+
+    2. Call the approval sub-workflow with an Execute Workflow node:
+       - type: "n8n-nodes-base.executeWorkflow", typeVersion: 1.3
+       - parameters.workflowId: {"__rl": true, "value": "aytM7Ef6tOKiGRTQ", "mode": "id", "cachedResultName": "slack-workflow-approval"}
+       - parameters.workflowInputs.mappingMode: "defineBelow"
+       - parameters.workflowInputs.value: {"messagePreview": "<preview text of the outbound message>", "recipient": "={{ $json.channel.id }}", "workflowName": "={{ $workflow.name }}"}
+
+    3. Branch on the result with an IF node:
+       - type: "n8n-nodes-base.if"
+       - condition: {{ $input.item.json.approved }} is true
+
+    4. On the TRUE branch: the actual outbound action node (Send Email, Slack
+       message, etc.). On the FALSE branch: a No Operation node
+       (type: "n8n-nodes-base.noOp") — do nothing if the approval was denied.
+
+    ---
+
     Before asking any clarifying question, check whether the answer is already
     available: in the Credentials, User ID, or Minutes Saved fields above, or
     already stated somewhere in the Conversation. Only ask about something that

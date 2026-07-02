@@ -11,6 +11,7 @@ structured output — the KA is free to keep asking if it genuinely
 needs to; we only treat it as a failure if it never converges.
 """
 import asyncio
+import hashlib
 import json
 from typing import Dict, List, Tuple
 
@@ -31,10 +32,22 @@ _MAX_TURNS = 4         # KA round-trips per test case before giving up
 # engine before the LLM ever sees the prompt — the model never sees literal
 # "{{ }}" syntax in production. We resolve the same three here so the eval
 # harness matches what the KA actually receives at runtime.
-_SYNTHETIC_SLACK_USER_ID = "U0EVAL0001"
 _CONVERSATION_EXPR = "{{ $('Thread Formatter').item.json.conversation }}"
 _USER_ID_EXPR = "{{ $('Slack Trigger').item.json.user }}"
 _TIME_SAVED_EXPR = "{{ $('AI Agent').item.json.output.time_saved }}"
+
+
+def _synthetic_user_id(inp: SyntheticInput) -> str:
+    """
+    A distinct per-input synthetic Slack user ID, not a single shared constant.
+    Concurrent test cases previously all claimed to be the exact same user
+    (U0EVAL0001) — if the KA endpoint does any server-side session/context
+    caching keyed by user ID, that could cross-wire concurrent conversations
+    together. Deterministic (hash of the input text), not random, so results
+    stay reproducible across runs.
+    """
+    digest = hashlib.sha1(inp.text.encode()).hexdigest()[:8].upper()
+    return f"U0EVAL{digest}"
 
 _SIMULATED_USER_SYSTEM = """\
 You are role-playing as the person who sent the ORIGINAL request below, in an \
@@ -60,7 +73,7 @@ def _resolve_prompt(system_prompt: str, conversation: str, inp: SyntheticInput) 
     return (
         system_prompt
         .replace(_CONVERSATION_EXPR, conversation)
-        .replace(_USER_ID_EXPR, _SYNTHETIC_SLACK_USER_ID)
+        .replace(_USER_ID_EXPR, _synthetic_user_id(inp))
         .replace(_TIME_SAVED_EXPR, str(inp.time_saved_minutes))
     )
 

@@ -112,13 +112,9 @@ class WorkflowEvaluator:
         endpoint_url: str,
         system_prompt: str,
         user_message: str,
-        want_trace_id: bool = False,
         use_responses_api: bool = False,
-    ) -> Tuple[str, str]:
+    ) -> str:
         """
-        Returns (content, trace_id). trace_id is "" unless want_trace_id and the
-        endpoint actually returned one — see x-mlflow-return-trace-id below.
-
         use_responses_api selects the request wire format:
           - True  -> {"input": [...]}     — the KA endpoint (ka-bd1cb93b-endpoint),
                      a Databricks Responses-style API. Confirmed via its own 400
@@ -130,15 +126,15 @@ class WorkflowEvaluator:
         Response parsing handles both "choices" (chat-completions) and "output"
         (Responses-style) shapes regardless of which format was sent, since
         that side was already verified working for both endpoints.
-        """
-        headers = dict(self._headers)
-        if want_trace_id:
-            headers["x-mlflow-return-trace-id"] = "true"
 
+        Note: the KA endpoint's full raw response has been confirmed to never
+        include a trace_id (model: "kbqa_agent" doesn't support
+        x-mlflow-return-trace-id), so we don't request or parse one here.
+        """
         payload_key = "input" if use_responses_api else "messages"
         resp = await client.post(
             endpoint_url,
-            headers=headers,
+            headers=self._headers,
             json={
                 payload_key: [
                     {"role": "system", "content": system_prompt},
@@ -154,7 +150,6 @@ class WorkflowEvaluator:
                 f"{resp.status_code} from {endpoint_url}: {resp.text[:1500]}"
             )
         body = resp.json()
-        trace_id = (body.get("metadata") or {}).get("trace_id", "") if want_trace_id else ""
 
         # Every dict access below uses `... or {}`/`... or []` rather than
         # dict.get(key, default), since get()'s default only applies when the
@@ -186,25 +181,23 @@ class WorkflowEvaluator:
                 f"Empty content from {endpoint_url}. finish_reason={finish_reason!r}. "
                 f"Raw response: {json.dumps(body)[:1500]}"
             )
-        return content, trace_id
+        return content
 
     async def _simulate_user_reply(
         self, client: httpx.AsyncClient, original_text: str, ka_question: str
     ) -> str:
         system = _SIMULATED_USER_SYSTEM.format(original_text=original_text)
-        content, _ = await self._call(client, self._generation_url, system, ka_question)
+        content = await self._call(client, self._generation_url, system, ka_question)
         return content.strip()
 
     async def _run_conversation(
         self, client: httpx.AsyncClient, system_prompt: str, inp: SyntheticInput
-    ) -> Tuple[str, List[dict], str]:
+    ) -> Tuple[str, List[dict]]:
         """
         Runs the KA up to _MAX_TURNS times, answering clarifying questions with
         a simulated user turn each time, until it outputs JSON or we give up.
-        Returns (final_response, transcript, trace_id) where transcript is a
-        list of {"role": "user"/"ka", "content": str} entries, and trace_id is
-        the KA's own MLflow trace ID for the FINAL turn (for pulling the native
-        Databricks judge/Assessment scores for that exact call).
+        Returns (final_response, transcript) where transcript is a list of
+        {"role": "user"/"ka", "content": str} entries for debugging/logging.
         """
         conversation = inp.text
         latest_user_turn = inp.text
@@ -212,46 +205,45 @@ class WorkflowEvaluator:
 
         for turn in range(_MAX_TURNS):
             resolved = _resolve_prompt(system_prompt, conversation, inp)
-            response, trace_id = await self._call(
-                client, self._endpoint_url, resolved, latest_user_turn,
-                want_trace_id=True, use_responses_api=True,
+            response = await self._call(
+                client, self._endpoint_url, resolved, latest_user_turn, use_responses_api=True,
             )
             transcript.append({"role": "ka", "content": response})
 
             if _looks_like_json(response) or turn == _MAX_TURNS - 1:
-                return response, transcript, trace_id
+                return response, transcript
 
             reply = await self._simulate_user_reply(client, inp.text, response)
             transcript.append({"role": "user", "content": reply})
             conversation = f"{conversation}\n\nAssistant: {response}\n\nUser: {reply}"
             latest_user_turn = reply
 
-        return response, transcript, trace_id  # pragma: no cover — loop always returns above
+        return response, transcript  # pragma: no cover — loop always returns above
 
     async def run_batch(
         self,
         system_prompt: str,
         inputs: List[SyntheticInput],
-    ) -> List[Tuple[SyntheticInput, str, List[dict], str]]:
+    ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
         """
         Run all inputs against a single system prompt concurrently, simulating
         multi-turn conversations where the KA asks clarifying questions.
-        Returns [(input, final_response, transcript, trace_id), …]
+        Returns [(input, final_response, transcript), …]
         """
         sem = asyncio.Semaphore(_MAX_CONCURRENT)
 
-        async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict], str]:
+        async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
             async with sem:
                 async with httpx.AsyncClient() as client:
                     try:
-                        response, transcript, trace_id = await self._run_conversation(
+                        response, transcript = await self._run_conversation(
                             client, system_prompt, inp
                         )
                     except Exception as e:
                         cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
                         print(f"  Warning: eval failed for '{inp.text[:60]}…': {cause}")
-                        response, transcript, trace_id = f"[ERROR: {cause}]", [], ""
-                    return inp, response, transcript, trace_id
+                        response, transcript = f"[ERROR: {cause}]", []
+                    return inp, response, transcript
 
         return await asyncio.gather(*[bounded_call(inp) for inp in inputs])
 
@@ -259,10 +251,10 @@ class WorkflowEvaluator:
         self,
         node_prompts: Dict[str, str],
         inputs: List[SyntheticInput],
-    ) -> Dict[str, List[Tuple[SyntheticInput, str, List[dict], str]]]:
+    ) -> Dict[str, List[Tuple[SyntheticInput, str, List[dict]]]]:
         """
         Evaluate multiple nodes' prompts simultaneously.
-        Returns {node_name: [(input, response, transcript, trace_id), …]}
+        Returns {node_name: [(input, response, transcript), …]}
         """
         tasks = {
             node_name: self.run_batch(prompt, inputs)

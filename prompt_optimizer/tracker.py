@@ -149,7 +149,6 @@ class PromptTracker:
                 "structural_valid": r.structural.valid,
                 "structural_checks": r.structural.checks,
                 "structural_errors": r.structural.errors,
-                "native_assessments": r.native_assessments,
             }
             for r in results
         ]

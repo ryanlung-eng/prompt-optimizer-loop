@@ -18,7 +18,10 @@
 
 # MAGIC %pip install httpx tenacity rich nest_asyncio pyyaml mlflow -q
 # MAGIC %pip install --upgrade typing_extensions -q
-# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
 
 # COMMAND ----------
 

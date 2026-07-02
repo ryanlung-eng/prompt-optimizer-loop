@@ -114,6 +114,7 @@ class WorkflowEvaluator:
         user_message: str,
         use_responses_api: bool = False,
         max_tokens: int = 1500,
+        temperature: float = 0.0,
     ) -> str:
         """
         use_responses_api selects the request wire format:
@@ -151,7 +152,7 @@ class WorkflowEvaluator:
             json={
                 payload_key: messages,
                 "max_tokens": max_tokens,
-                "temperature": 0.3,
+                "temperature": temperature,
             },
             timeout=90,
         )
@@ -197,7 +198,11 @@ class WorkflowEvaluator:
         self, client: httpx.AsyncClient, original_text: str, ka_question: str
     ) -> str:
         system = _SIMULATED_USER_SYSTEM.format(original_text=original_text)
-        content = await self._call(client, self._generation_url, system, ka_question)
+        # temperature=0: during prompt isolation/optimization, every source of
+        # non-determinism in the pipeline adds noise to prompt-vs-prompt
+        # comparisons. Revisit as a hyperparameter once baseline prompt
+        # performance is established.
+        content = await self._call(client, self._generation_url, system, ka_question, temperature=0.0)
         return content.strip()
 
     async def _run_conversation(
@@ -225,8 +230,11 @@ class WorkflowEvaluator:
             # used for the short simulated-user replies) was truncating the
             # KA's output mid-generation, producing invalid JSON and
             # connections referencing nodes that never got emitted.
+            # temperature=0: isolates prompt quality from sampling noise
+            # during optimization — see _simulate_user_reply for the same rationale.
             response = await self._call(
-                client, self._endpoint_url, resolved, "", use_responses_api=True, max_tokens=6000,
+                client, self._endpoint_url, resolved, "",
+                use_responses_api=True, max_tokens=6000, temperature=0.0,
             )
             transcript.append({"role": "ka", "content": response})
 

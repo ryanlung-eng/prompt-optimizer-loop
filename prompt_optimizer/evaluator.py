@@ -26,7 +26,7 @@ from .synthetic_data import SyntheticInput
 # so this needs to be lower than it would for a single-shot design, to avoid
 # tripping the endpoint's rate limit.
 _MAX_CONCURRENT = 4
-_MAX_TURNS = 4         # KA round-trips per test case before giving up
+_MAX_TURNS = 5         # KA round-trips per test case before giving up
 
 # In real n8n, these three expressions are resolved by n8n's own expression
 # engine before the LLM ever sees the prompt — the model never sees literal

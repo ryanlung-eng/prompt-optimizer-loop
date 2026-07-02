@@ -16,11 +16,9 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install httpx tenacity rich nest_asyncio pyyaml mlflow "typing_extensions>=4.10.0" -q
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
+# MAGIC %pip install httpx tenacity rich nest_asyncio pyyaml mlflow -q
+# MAGIC %pip install --upgrade typing_extensions -q
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 

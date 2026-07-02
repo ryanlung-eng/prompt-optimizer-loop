@@ -66,19 +66,35 @@ assistant. Do NOT count referencing any of these as fabrication:
     fabrication worth flagging.
   • Placeholder ID/reference VALUES the assistant has no way to actually know
     — Slack user IDs for people other than the workflow owner, Slack channel
-    IDs, sub-workflow IDs for the approval flow, or any other n8n identifier
-    string not given verbatim in the Credentials section — are NOT
+    IDs, or any other n8n identifier string not listed below — are NOT
     fabrication. The assistant has no access to a real directory/lookup, and
     n8n JSON requires SOME string value in these fields, so inventing a
     plausible-looking one is expected, necessary placeholder behavior, not
     dishonesty. Do NOT flag these under knowledge_honesty. This is different
     from inventing a false CAPABILITY, false BUSINESS RULE, or a specific
     approver IDENTITY (covered above) — those remain real fabrications.
-  • The credential IDs given verbatim in the Credentials section (e.g. a
-    Slack, Gmail, or Sheets credential ID) are the REAL, correct values — the
-    assistant is expected to use them exactly as given. Do not flag using
-    them as fabrication; only flag it if the assistant uses a DIFFERENT
-    value than what was actually given in the Credentials section.
+  • THESE EXACT VALUES ARE ALWAYS CORRECT — you will not see them written out
+    in the user's message (they come from a separate Credentials section you
+    are not shown), so do not conclude "no credentials were given" just
+    because the user's message doesn't mention them. Using ANY of these
+    exact strings is 100% correct and must NEVER be flagged as invented,
+    fabricated, or unsupported, no matter what the user's message says:
+      - Gmail credential ID: YzPY9a7o7oJjpL3j
+      - Google Sheets credential ID: 6LFdjEidf1KbbG0p
+      - Google Sheets Trigger credential ID: Z2l3ru55RTOmzlGB
+      - Databricks credential ID: DNV5Ld0Um1SCcA04
+      - Jira credential ID: Q8l4d25oEqHPYX7H
+      - Slack credential ID: qrX7FbQkvUaMRB0N
+      - Approval sub-workflow ID: aytM7Ef6tOKiGRTQ (cachedResultName
+        "slack-workflow-approval") — this is a fixed, shared, pre-existing
+        sub-workflow, not something the assistant invented.
+    A credential/workflow ID is ONLY a fabrication if it does NOT match any
+    value in this list AND is not a placeholder covered by the bullet above.
+  • The "Minutes Saved" value given above is computed by a separate upstream
+    system, independently of whatever manual-time estimate the user might
+    casually mention in conversation (e.g. "takes about 10 minutes by hand").
+    These two numbers are NOT required to match — a mismatch between them is
+    NOT a fabrication.
 
 Score each dimension 0.0–1.0 using this rubric:
 
@@ -98,13 +114,16 @@ completeness          — 1.0: Every detail the user provided (account, channel,
                         0.5: Some details addressed. 0.0: Ignored user specifics.
 
 knowledge_honesty     — HARD RULE, checked FIRST, before anything else in this dimension: using ANY
-                        credential ID that exactly matches one given in the Credentials section is
-                        ALWAYS correct and must NEVER reduce this score, no matter which of the given
-                        credentials it is or which node it's used in. This is the single most common
-                        judging mistake — do not make it. A credential ID is only a fabrication if it
-                        does NOT match any ID given in the Credentials section. (Using the right
-                        credential in a technically wrong node type, e.g. a Slack credential on a Gmail
-                        node, is a workflow_accuracy issue, not a knowledge_honesty one — do not
+                        credential/workflow ID that exactly matches one of the values listed under
+                        "THESE EXACT VALUES ARE ALWAYS CORRECT" above is ALWAYS correct and must NEVER
+                        reduce this score — even if the user's message itself never mentions
+                        credentials at all. This is the single most common judging mistake — do not
+                        make it. Do NOT reason "the user didn't provide this, so it's invented"; you are
+                        not shown the Credentials section the assistant actually received, only the
+                        list above. A credential ID is only a fabrication if it does NOT match any value
+                        in that list AND is not a placeholder covered by the bullet above it. (Using the
+                        right credential in a technically wrong node type, e.g. a Slack credential on a
+                        Gmail node, is a workflow_accuracy issue, not a knowledge_honesty one — do not
                         double-penalize it here.)
                         Once that check is out of the way, score the rest of this dimension normally:
                         1.0: No invented account names, channel names, or node configs not covered by

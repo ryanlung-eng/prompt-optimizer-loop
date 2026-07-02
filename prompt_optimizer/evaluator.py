@@ -116,13 +116,18 @@ class WorkflowEvaluator:
     ) -> str:
         """
         use_responses_api selects the request wire format:
-          - True  -> {"input": [...]}     — the KA endpoint (ka-bd1cb93b-endpoint),
-                     a Databricks Responses-style API. Confirmed via its own 400
-                     error when sent "messages" instead.
-          - False -> {"messages": [...]}  — standard chat-completions, used by
+          - True  -> {"input": [{"role": "user", "content": system_prompt}]}
+                     — the KA endpoint (ka-bd1cb93b-endpoint / "kbqa_agent").
+                     Confirmed via a real production trace: this agent sends
+                     the ENTIRE resolved prompt (instructions + conversation)
+                     as a single "user"-role message — it does not use a
+                     separate "system" role at all. user_message is ignored
+                     for this branch; the caller must fully resolve
+                     everything into system_prompt beforehand.
+          - False -> {"messages": [{"role": "system", ...}, {"role": "user", ...}]}
+                     — standard chat-completions, used by
                      fast_generation_endpoint/generation_endpoint/judge_endpoint
-                     everywhere else in this codebase. Confirmed via this same
-                     400-on-"input" error.
+                     everywhere else in this codebase.
         Response parsing handles both "choices" (chat-completions) and "output"
         (Responses-style) shapes regardless of which format was sent, since
         that side was already verified working for both endpoints.
@@ -131,15 +136,19 @@ class WorkflowEvaluator:
         include a trace_id (model: "kbqa_agent" doesn't support
         x-mlflow-return-trace-id), so we don't request or parse one here.
         """
-        payload_key = "input" if use_responses_api else "messages"
+        if use_responses_api:
+            payload_key, messages = "input", [{"role": "user", "content": system_prompt}]
+        else:
+            payload_key = "messages"
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
         resp = await client.post(
             endpoint_url,
             headers=self._headers,
             json={
-                payload_key: [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
+                payload_key: messages,
                 "max_tokens": 1500,
                 "temperature": 0.3,
             },
@@ -198,15 +207,20 @@ class WorkflowEvaluator:
         a simulated user turn each time, until it outputs JSON or we give up.
         Returns (final_response, transcript) where transcript is a list of
         {"role": "user"/"ka", "content": str} entries for debugging/logging.
+
+        Confirmed against a real production trace: this agent expects the
+        FULL running conversation (every turn, "User:"/"Assistant:" prefixed,
+        including the very first message) embedded in a single resolved
+        prompt sent as one "user"-role message — not split across separate
+        system/user turns.
         """
-        conversation = inp.text
-        latest_user_turn = inp.text
+        conversation = f"User: {inp.text}"
         transcript = [{"role": "user", "content": inp.text}]
 
         for turn in range(_MAX_TURNS):
             resolved = _resolve_prompt(system_prompt, conversation, inp)
             response = await self._call(
-                client, self._endpoint_url, resolved, latest_user_turn, use_responses_api=True,
+                client, self._endpoint_url, resolved, "", use_responses_api=True,
             )
             transcript.append({"role": "ka", "content": response})
 
@@ -216,7 +230,6 @@ class WorkflowEvaluator:
             reply = await self._simulate_user_reply(client, inp.text, response)
             transcript.append({"role": "user", "content": reply})
             conversation = f"{conversation}\n\nAssistant: {response}\n\nUser: {reply}"
-            latest_user_turn = reply
 
         return response, transcript  # pragma: no cover — loop always returns above
 

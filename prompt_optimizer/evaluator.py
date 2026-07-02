@@ -113,6 +113,7 @@ class WorkflowEvaluator:
         system_prompt: str,
         user_message: str,
         use_responses_api: bool = False,
+        max_tokens: int = 1500,
     ) -> str:
         """
         use_responses_api selects the request wire format:
@@ -149,7 +150,7 @@ class WorkflowEvaluator:
             headers=self._headers,
             json={
                 payload_key: messages,
-                "max_tokens": 1500,
+                "max_tokens": max_tokens,
                 "temperature": 0.3,
             },
             timeout=90,
@@ -219,8 +220,13 @@ class WorkflowEvaluator:
 
         for turn in range(_MAX_TURNS):
             resolved = _resolve_prompt(system_prompt, conversation, inp)
+            # A complete workflow with an approval sub-flow can easily need
+            # 8-10+ verbose n8n nodes — 1500 tokens (the old default, still
+            # used for the short simulated-user replies) was truncating the
+            # KA's output mid-generation, producing invalid JSON and
+            # connections referencing nodes that never got emitted.
             response = await self._call(
-                client, self._endpoint_url, resolved, "", use_responses_api=True,
+                client, self._endpoint_url, resolved, "", use_responses_api=True, max_tokens=6000,
             )
             transcript.append({"role": "ka", "content": response})
 

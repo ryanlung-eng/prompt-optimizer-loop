@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install httpx tenacity rich nest_asyncio -q
+# MAGIC %pip install httpx tenacity rich nest_asyncio pyyaml mlflow -q
 
 # COMMAND ----------
 

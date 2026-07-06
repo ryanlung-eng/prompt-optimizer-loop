@@ -36,27 +36,40 @@ prompts:
     inline the approval sub-workflow's own internal steps as separate
     connected nodes in this workflow.
 
-    1. Resolve the workflow owner's Slack DM channel with an HTTP Request node:
+    CRITICAL: every node has TWO different identifiers — "id" (a UUID or
+    short internal slug, never shown to anyone) and "name" (the human-readable
+    label, e.g. "Get DM Channel ID"). The "connections" object must ALWAYS
+    reference nodes by their "name" field, never by "id". Using the "id"
+    slug as a connection target is invalid and will break the workflow.
+
+    Use these EXACT "name" values for the four approval-pattern nodes, and
+    wire "connections" using these names in this exact order:
+
+    1. "Get DM Channel ID" — resolves the workflow owner's Slack DM channel:
        - type: "n8n-nodes-base.httpRequest", method: "POST"
        - url: "https://slack.com/api/conversations.open"
        - authentication: "predefinedCredentialType", nodeCredentialType: "slackApi"
        - bodyParameters: [{"name": "users", "value": "<the User ID given above>"}]
        - credentials.slackApi.id: the Slack credential ID given above
        - its output includes {{ $json.channel.id }}, the DM channel ID to use as the recipient
+       - connects to: "Call Approval Workflow"
 
-    2. Call the approval sub-workflow with an Execute Workflow node:
+    2. "Call Approval Workflow" — calls the approval sub-workflow:
        - type: "n8n-nodes-base.executeWorkflow", typeVersion: 1.3
        - parameters.workflowId: {"__rl": true, "value": "aytM7Ef6tOKiGRTQ", "mode": "id", "cachedResultName": "slack-workflow-approval"}
        - parameters.workflowInputs.mappingMode: "defineBelow"
        - parameters.workflowInputs.value: {"messagePreview": "<preview text of the outbound message>", "recipient": "={{ $json.channel.id }}", "workflowName": "={{ $workflow.name }}"}
+       - connects to: "IF Approved"
 
-    3. Branch on the result with an IF node:
+    3. "IF Approved" — branches on the result:
        - type: "n8n-nodes-base.if"
        - condition: {{ $input.item.json.approved }} is true
+       - TRUE branch connects to: the actual outbound action node (Send Email,
+         Slack message, etc.) — name it descriptively for what it does
+       - FALSE branch connects to: "No Operation"
 
-    4. On the TRUE branch: the actual outbound action node (Send Email, Slack
-       message, etc.). On the FALSE branch: a No Operation node
-       (type: "n8n-nodes-base.noOp") — do nothing if the approval was denied.
+    4. "No Operation" — does nothing if the approval was denied:
+       - type: "n8n-nodes-base.noOp"
 
     ---
 
@@ -72,6 +85,10 @@ prompts:
     CRITICAL: Output raw JSON only. Your entire response must start with { and end with }. No markdown, no code fences, no backticks, no explanations, no comments before or after. Anything other than a valid JSON object will break the system.
 
     CRITICAL: Use valid JSON syntax only. Double quotes for all strings and keys. Lowercase true/false/null for booleans and null values. Never use single quotes, True, False, or None — these are Python syntax and will break the parser.
+
+    CRITICAL: In "connections", always reference nodes by their "name" field, never by "id". A node's "id" is never used anywhere in "connections".
+
+    CRITICAL: An n8n expression field (any string starting with =, or wrapped in {{ }}) must be a SINGLE expression, not a multi-statement script. Never write full JavaScript blocks with variable declarations (const/let/var) or multiple statements inside an expression field — that logic belongs in a dedicated Code node instead, with the expression field simply referencing that Code node's output.
 
 databricks:
   workspace_url: "${DATABRICKS_HOST}"    # e.g. https://adb-xxx.azuredatabricks.net

@@ -90,6 +90,16 @@ assistant. Do NOT count referencing any of these as fabrication:
         sub-workflow, not something the assistant invented.
     A credential/workflow ID is ONLY a fabrication if it does NOT match any
     value in this list AND is not a placeholder covered by the bullet above.
+  • The REQUIRED approval pattern has FOUR nodes, in this order: (1) a "Get DM
+    Channel ID" HTTP Request node (calls Slack's conversations.open to
+    resolve the workflow owner's DM channel — this step is REQUIRED, not
+    extra complexity; the approval sub-workflow does NOT resolve the DM
+    channel itself), (2) a "Call Approval Workflow" Execute Workflow node
+    calling the fixed sub-workflow ID above, (3) an "IF Approved" node
+    checking the result, (4) the real outbound action on the true branch and
+    a "No Operation" node on the false branch. Do NOT flag "Get DM Channel
+    ID" as unnecessary or as adding complexity — it is the correct, required
+    pattern.
   • The "Minutes Saved" value given above is computed by a separate upstream
     system, independently of whatever manual-time estimate the user might
     casually mention in conversation (e.g. "takes about 10 minutes by hand").
@@ -152,7 +162,11 @@ None — these are Python syntax and will break the parser.
              "clarity": float, "completeness": float, "knowledge_honesty": float},
   "reasoning": {"intent_understanding": "str", "workflow_accuracy": "str",
                 "clarity": "str", "completeness": "str", "knowledge_honesty": "str"},
-  "hallucinated_details": ["<specific thing the assistant made up>", ...],
+  "hallucinated_details": ["<specific thing that is an ACTUAL fabrication and reduced
+    the knowledge_honesty score above — do NOT include acceptable placeholder IDs,
+    correct credential usage, or anything else this rubric says not to penalize,
+    even just to note it as acceptable. If it didn't cost points, it doesn't belong
+    in this list.>", ...],
   "overall_comment": "str"
 }"""
 

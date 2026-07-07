@@ -19,9 +19,22 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
 
+from . import validator as _validator_module
 from .config import DatabricksConfig
 from .synthetic_data import SyntheticInput
 from .validator import validate_workflow_json
+
+# Hashes THIS file's own source plus validator.py's — both directly determine
+# how a conversation plays out (self-repair trigger logic, what counts as
+# "valid"), not just the prompt text. Baked into the cache key below so any
+# change here automatically invalidates stale cached conversations, instead
+# of relying on remembering to bump a version number by hand. This is exactly
+# the bug that let 48/56 conversations get served from cache generated under
+# the OLD, pre-fix self-repair logic, re-scored by the NEW judge — making a
+# stale result look like the fix had been validated when it hadn't.
+_LOGIC_VERSION = hashlib.sha256(
+    (Path(__file__).read_text() + Path(_validator_module.__file__).read_text()).encode()
+).hexdigest()[:16]
 
 # Multi-turn conversations mean each concurrent "slot" can burst up to
 # _MAX_TURNS sequential calls against the SAME KA endpoint, not just one —
@@ -120,10 +133,14 @@ class WorkflowEvaluator:
     @staticmethod
     def _cache_key(system_prompt: str, inp: SyntheticInput) -> str:
         # system_prompt + inp.text + inp.time_saved_minutes are the only three
-        # things that feed into the resolved prompt / conversation trajectory
+        # *inputs* that feed into the resolved prompt / conversation trajectory
         # (see _resolve_prompt) — together they fully determine the outcome
-        # at temperature=0.
-        raw = f"{system_prompt}:::{inp.text}:::{inp.time_saved_minutes}"
+        # at temperature=0. _LOGIC_VERSION is included too, since a code change
+        # to how the conversation is conducted (this file or validator.py) is
+        # just as capable of changing the outcome as a prompt change is — a
+        # bare (prompt, input) key would silently keep serving conversations
+        # generated under old, since-fixed conversation-handling logic.
+        raw = f"{system_prompt}:::{inp.text}:::{inp.time_saved_minutes}:::{_LOGIC_VERSION}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _save_cache(self) -> None:

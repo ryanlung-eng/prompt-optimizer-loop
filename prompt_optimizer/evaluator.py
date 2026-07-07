@@ -82,13 +82,6 @@ def _resolve_prompt(system_prompt: str, conversation: str, inp: SyntheticInput) 
     )
 
 
-def _looks_like_json(text: str) -> bool:
-    # Checking only the leading "{" let a mid-conversation reply that happens
-    # to start with a brace (for any unrelated reason) get treated as "final"
-    # prematurely, which then fed a malformed fragment into the structural
-    # validator's JSON parser instead of continuing the conversation.
-    t = text.strip()
-    return t.startswith("{") and t.endswith("}")
 
 
 class WorkflowEvaluator:
@@ -285,8 +278,14 @@ class WorkflowEvaluator:
             transcript.append({"role": "ka", "content": response})
             last_turn = turn == _MAX_TURNS - 1
 
-            if _looks_like_json(response):
-                structural = validate_workflow_json(response)
+            # validate_workflow_json is the single source of truth for "is
+            # this JSON" — a separate, stricter heuristic here previously
+            # drifted out of sync with it (whole-string brace check vs. the
+            # validator's find-anywhere check), causing a response to be
+            # bucketed as "never attempted" in one place while still
+            # generating a structural error in another.
+            structural = validate_workflow_json(response)
+            if structural.is_json:
                 if structural.valid or last_turn:
                     return response, transcript
                 reply = (

@@ -278,9 +278,16 @@ class EvalResult:
         checking only the final response conflates "never tried" with "tried
         and ran out of repair attempts while still broken" — this looks at
         the whole transcript to keep those two cases distinct.
+
+        Uses validate_workflow_json's own find-anywhere brace detection
+        (not a separate stricter heuristic) so this stays consistent with
+        evaluator.py's self-repair loop and self.structural below — two
+        different definitions of "is this JSON" previously let a response
+        get bucketed as "never attempted" here while still contributing a
+        structural error elsewhere.
         """
         return any(
-            t["role"] == "ka" and t["content"].strip().startswith("{") and t["content"].strip().endswith("}")
+            t["role"] == "ka" and validate_workflow_json(t["content"]).is_json
             for t in self.transcript
         )
 

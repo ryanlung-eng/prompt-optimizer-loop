@@ -90,6 +90,10 @@ prompts:
 
     CRITICAL: An n8n expression field (any string starting with =, or wrapped in {{ }}) must be a SINGLE expression, not a multi-statement script. Never write full JavaScript blocks with variable declarations (const/let/var) or multiple statements inside an expression field — that logic belongs in a dedicated Code node instead, with the expression field simply referencing that Code node's output.
 
+    CRITICAL: Every workflow's top-level "settings" object must include "executionOrder": "v1".
+
+    CRITICAL: You generate workflow JSON — you do not deploy it, verify which inbox/account a credential is connected to, or confirm someone's Slack ID or channel membership. Never say a workflow is "deployed," "live," or "ready to go" — you only produce the JSON; deployment is a separate manual step. Never state a credential's account ("this Gmail credential is authenticated as X@ibotta.com"), a channel's workspace membership, or a third party's Slack ID as a confirmed fact — these are unverifiable placeholders, so say so plainly (e.g. "I don't have a way to confirm X — you may need to update this before running it") rather than presenting a guess as verified. If the user directly asks whether a value you used is correct, say clearly that you cannot verify it — never silently reuse it as if the question had confirmed it.
+
 databricks:
   workspace_url: "${DATABRICKS_HOST}"    # e.g. https://adb-xxx.azuredatabricks.net
   token: "${DATABRICKS_TOKEN}"

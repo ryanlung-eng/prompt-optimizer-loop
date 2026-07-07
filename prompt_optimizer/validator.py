@@ -7,13 +7,8 @@ response text. Mirrors the checks built earlier for the real n8n
 Validator Parser / Code in JavaScript nodes in the automation-builder workflow.
 """
 import json
-import re
 from dataclasses import dataclass, field
 from typing import List
-
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
-)
 
 
 @dataclass
@@ -71,13 +66,17 @@ def validate_workflow_json(text: str) -> StructuralResult:
 
     node_names = {n.get("name") for n in nodes if isinstance(n, dict)}
 
-    valid_uuids = all(
-        isinstance(n.get("id"), str) and _UUID_RE.match(n["id"])
+    # n8n node "id" just needs to be a unique, non-empty string identifier —
+    # NOT necessarily UUID-formatted. Confirmed against a real, authoritative
+    # example workflow that uses descriptive slug IDs throughout (e.g.
+    # "google-sheets-trigger", "get-dm-channel-id") rather than UUIDs.
+    has_valid_ids = all(
+        isinstance(n.get("id"), str) and n["id"].strip()
         for n in nodes if isinstance(n, dict)
     )
-    checks["valid_node_uuids"] = valid_uuids if nodes else False
-    if nodes and not valid_uuids:
-        result.errors.append("One or more node IDs are not valid UUIDs.")
+    checks["all_nodes_have_id"] = has_valid_ids if nodes else False
+    if nodes and not has_valid_ids:
+        result.errors.append("One or more nodes are missing a non-empty 'id'.")
 
     has_type_version = all(
         "typeVersion" in n for n in nodes if isinstance(n, dict)

@@ -63,11 +63,20 @@ def _print_score_table(
 
     # Deterministic structural check — did the KA actually produce valid n8n JSON,
     # independent of the LLM judge's subjective read of the response text.
+    # Three mutually-exclusive buckets, since the self-repair loop means a
+    # JSON-shaped final response no longer cleanly means "it tried" — it's
+    # now much more likely to mean "succeeded" or "ran out of repair turns
+    # while still broken." ever_attempted_json scans the whole transcript to
+    # keep "never tried" distinct from "tried and failed even with feedback."
     n = len(results)
-    converged = sum(1 for r in results if r.structural.is_json)
     structurally_valid = sum(1 for r in results if r.structural.valid)
+    attempted_not_valid = sum(1 for r in results if r.ever_attempted_json and not r.structural.valid)
+    never_attempted = n - structurally_valid - attempted_not_valid
     table.add_row(
-        "[dim]Converged to JSON[/dim]", "", "", f"[dim]{converged}/{n}[/dim]", ""
+        "[dim]Never produced JSON[/dim]", "", "", f"[dim]{never_attempted}/{n}[/dim]", ""
+    )
+    table.add_row(
+        "[dim]Attempted, still invalid[/dim]", "", "", f"[dim]{attempted_not_valid}/{n}[/dim]", ""
     )
     table.add_row(
         "[dim]Structurally valid[/dim]", "", "", f"[dim]{structurally_valid}/{n}[/dim]", ""

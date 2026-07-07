@@ -100,17 +100,19 @@ class PromptTracker:
         mlflow.log_metric("score_p25", sorted_scores[len(sorted_scores) // 4])
         mlflow.log_metric("score_p75", sorted_scores[3 * len(sorted_scores) // 4])
 
-        # Did the KA actually converge to a JSON workflow, and was it structurally valid?
+        # Did the KA ever attempt JSON, and did it end up structurally valid?
         # Deterministic — no LLM judge involved, answers "does the output actually work"
         # directly rather than via an LLM's subjective read of the response text.
+        # Mutually exclusive with pct_structurally_valid — see EvalResult.ever_attempted_json
+        # for why the self-repair loop makes "attempted" and "valid" no longer redundant.
         turn_counts = [len([t for t in r.transcript if t["role"] == "ka"]) for r in results if r.transcript]
-        mlflow.log_metric(
-            "pct_converged_to_json",
-            sum(1 for r in results if r.structural.is_json) / max(len(results), 1),
-        )
         mlflow.log_metric(
             "pct_structurally_valid",
             sum(1 for r in results if r.structural.valid) / max(len(results), 1),
+        )
+        mlflow.log_metric(
+            "pct_attempted_but_invalid",
+            sum(1 for r in results if r.ever_attempted_json and not r.structural.valid) / max(len(results), 1),
         )
         mlflow.log_metric(
             "avg_structural_score",

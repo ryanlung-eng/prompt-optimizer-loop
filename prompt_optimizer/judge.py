@@ -247,6 +247,20 @@ class EvalResult:
     def __post_init__(self):
         pass   # weighted_score set by judge after creation
 
+    @property
+    def ever_attempted_json(self) -> bool:
+        """
+        Did the KA produce a JSON-shaped attempt at ANY point in the
+        conversation — not just the final turn. With the self-repair loop,
+        checking only the final response conflates "never tried" with "tried
+        and ran out of repair attempts while still broken" — this looks at
+        the whole transcript to keep those two cases distinct.
+        """
+        return any(
+            t["role"] == "ka" and t["content"].strip().startswith("{") and t["content"].strip().endswith("}")
+            for t in self.transcript
+        )
+
 
 def _weighted_score(scores: Dict[str, float], dimensions: List[JudgeDimension]) -> float:
     total_weight = sum(d.weight for d in dimensions)

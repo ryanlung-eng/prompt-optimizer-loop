@@ -4,6 +4,7 @@ Ties together synthetic data, evaluation, judging, tracking, and optimization.
 """
 import asyncio
 import hashlib
+from pathlib import Path
 from typing import Dict, List
 
 from rich.console import Console
@@ -235,7 +236,12 @@ async def run_optimization_loop(
         return
 
     # --- Initialize services ---
-    evaluator = WorkflowEvaluator(config.databricks)
+    # Reuse the synthetic-dataset cache's directory for the conversation
+    # cache too — no new config needed, and it's already a proven-working
+    # /Workspace path (local_disk0 doesn't persist, /dbfs had permission
+    # issues — see earlier commits).
+    cache_dir = str(Path(config.synthetic_data.cache_path).parent)
+    evaluator = WorkflowEvaluator(config.databricks, cache_dir=cache_dir)
     judge = DatabricksJudge(config.databricks, config.judge)
     optimizer = PromptOptimizer(config.optimizer, config.judge, config.databricks)
     tracker = PromptTracker(config.databricks)

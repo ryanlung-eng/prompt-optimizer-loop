@@ -13,7 +13,8 @@ needs to; we only treat it as a failure if it never converges.
 import asyncio
 import hashlib
 import json
-from typing import Dict, List, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
@@ -97,7 +98,7 @@ class WorkflowEvaluator:
     This lets us evaluate prompt changes without triggering the full Slack workflow.
     """
 
-    def __init__(self, config: DatabricksConfig):
+    def __init__(self, config: DatabricksConfig, cache_dir: Optional[str] = None):
         self._config = config
         self._endpoint_url = (
             f"{config.workspace_url}/serving-endpoints/{config.eval_endpoint}/invocations"
@@ -109,6 +110,34 @@ class WorkflowEvaluator:
             "Authorization": f"Bearer {config.token}",
             "Content-Type": "application/json",
         }
+
+        # With temperature=0 everywhere, the entire conversation is
+        # deterministic for a given (prompt, input) pair — no reason to
+        # re-spend tokens re-running an identical conversation across
+        # multiple notebook sessions (e.g. iterating on judge.py/validator.py
+        # without touching the prompt itself, which is most of this session).
+        self._cache_path = Path(cache_dir) / "conversation_cache.json" if cache_dir else None
+        self._cache: Dict[str, dict] = {}
+        if self._cache_path and self._cache_path.exists():
+            try:
+                self._cache = json.loads(self._cache_path.read_text())
+            except Exception as e:
+                print(f"  Warning: could not load conversation cache: {e}")
+
+    @staticmethod
+    def _cache_key(system_prompt: str, inp: SyntheticInput) -> str:
+        # system_prompt + inp.text + inp.time_saved_minutes are the only three
+        # things that feed into the resolved prompt / conversation trajectory
+        # (see _resolve_prompt) — together they fully determine the outcome
+        # at temperature=0.
+        raw = f"{system_prompt}:::{inp.text}:::{inp.time_saved_minutes}"
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def _save_cache(self) -> None:
+        if not self._cache_path:
+            return
+        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._cache_path.write_text(json.dumps(self._cache, indent=2))
 
     # Rate limiting (429) needs much more room than a transient network blip —
     # jittered backoff so concurrent slots don't all retry in lockstep and
@@ -286,8 +315,16 @@ class WorkflowEvaluator:
         Returns [(input, final_response, transcript), …]
         """
         sem = asyncio.Semaphore(_MAX_CONCURRENT)
+        cache_hits = 0
 
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
+            nonlocal cache_hits
+            key = self._cache_key(system_prompt, inp)
+            cached = self._cache.get(key)
+            if cached is not None:
+                cache_hits += 1
+                return inp, cached["response"], cached["transcript"]
+
             async with sem:
                 async with httpx.AsyncClient() as client:
                     try:
@@ -298,9 +335,18 @@ class WorkflowEvaluator:
                         cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
                         print(f"  Warning: eval failed for '{inp.text[:60]}…': {cause}")
                         response, transcript = f"[ERROR: {cause}]", []
+                    # Don't cache errors — rate limits/backend outages are
+                    # transient infra issues, not deterministic model output;
+                    # a later run might succeed even with the same key.
+                    if not response.startswith("[ERROR:"):
+                        self._cache[key] = {"response": response, "transcript": transcript}
                     return inp, response, transcript
 
-        return await asyncio.gather(*[bounded_call(inp) for inp in inputs])
+        results = await asyncio.gather(*[bounded_call(inp) for inp in inputs])
+        if cache_hits:
+            print(f"  {cache_hits}/{len(inputs)} conversations served from cache (0 tokens used)")
+        self._save_cache()
+        return results
 
     async def run_multi_prompt_batch(
         self,

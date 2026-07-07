@@ -339,6 +339,14 @@ class WorkflowEvaluator:
                     # a later run might succeed even with the same key.
                     if not response.startswith("[ERROR:"):
                         self._cache[key] = {"response": response, "transcript": transcript}
+                        # Save after EVERY new entry, not just once at the end —
+                        # a hard rate limit forcing an interrupted/killed run
+                        # previously meant every conversation that DID succeed
+                        # before the interruption was lost, since _save_cache()
+                        # was never reached. Asyncio is cooperative/single-
+                        # threaded, so this synchronous write can't race with
+                        # another coroutine's cache mutation.
+                        self._save_cache()
                     return inp, response, transcript
 
         results = await asyncio.gather(*[bounded_call(inp) for inp in inputs])

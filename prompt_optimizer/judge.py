@@ -27,6 +27,16 @@ from .validator import StructuralResult, validate_workflow_json
 def _unwrap(e: Exception) -> Exception:
     return e.last_attempt.exception() if isinstance(e, RetryError) else e
 
+
+def _format_transcript(transcript: List[dict]) -> str:
+    """Renders the multi-turn transcript as readable User:/Assistant: turns,
+    so the judge can verify claims against what actually happened in the
+    conversation instead of only ever seeing the opening message."""
+    if not transcript:
+        return "(single-turn — no follow-up conversation occurred)"
+    role_label = {"user": "User", "ka": "Assistant"}
+    return "\n\n".join(f"{role_label.get(t['role'], t['role'])}: {t['content']}" for t in transcript)
+
 # ------------------------------------------------------------------ #
 # Judge prompts                                                       #
 # ------------------------------------------------------------------ #
@@ -219,11 +229,19 @@ Lowercase true/false for booleans. Never use single quotes, True, False, or
 None — these are Python syntax and will break the parser."""
 
 _JUDGE_USER_TEMPLATE = """\
-USER REQUEST:
+ORIGINAL USER REQUEST:
 {user_message}
 
 EXPECTED BEHAVIOR:
 {expected_behavior}
+
+FULL CONVERSATION SO FAR — this is a multi-turn exchange; later turns may
+legitimately introduce details not in the ORIGINAL USER REQUEST above (e.g.
+answers to the assistant's own clarifying questions). Before flagging
+anything as fabricated, check whether it actually appears somewhere in this
+conversation — do not assume something is invented just because it's absent
+from the ORIGINAL USER REQUEST specifically:
+{full_conversation}
 
 <assistant_response_to_evaluate>
 {actual_response}
@@ -346,6 +364,7 @@ class DatabricksJudge:
         user = _JUDGE_USER_TEMPLATE.format(
             user_message=inp.text,
             expected_behavior=inp.expected_behavior,
+            full_conversation=_format_transcript(transcript or []),
             actual_response=actual_response,
         )
         try:

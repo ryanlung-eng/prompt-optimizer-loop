@@ -20,13 +20,16 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponent
 
 from .config import DatabricksConfig
 from .synthetic_data import SyntheticInput
+from .validator import validate_workflow_json
 
 # Multi-turn conversations mean each concurrent "slot" can burst up to
 # _MAX_TURNS sequential calls against the SAME KA endpoint, not just one —
 # so this needs to be lower than it would for a single-shot design, to avoid
 # tripping the endpoint's rate limit.
 _MAX_CONCURRENT = 4
-_MAX_TURNS = 5         # KA round-trips per test case before giving up
+_MAX_TURNS = 7         # KA round-trips per test case before giving up — gives
+                       # the self-repair loop below room to actually work, not
+                       # just room to escape a clarifying-question stall.
 
 # In real n8n, these three expressions are resolved by n8n's own expression
 # engine before the LLM ever sees the prompt — the model never sees literal
@@ -224,6 +227,15 @@ class WorkflowEvaluator:
         including the very first message) embedded in a single resolved
         prompt sent as one "user"-role message — not split across separate
         system/user turns.
+
+        Self-repair: more turns alone only helps CONVERGENCE (escaping a
+        clarifying-question stall) — it does nothing for the CORRECTNESS of
+        the JSON once produced. So once a response looks JSON-shaped, it's
+        additionally checked against validate_workflow_json() before being
+        accepted as final. If it fails, the specific validation errors are
+        fed back as the next turn ("that didn't parse — here's why — please
+        fix it"), giving the model a targeted chance to correct itself
+        instead of us silently accepting broken JSON as the end result.
         """
         conversation = f"User: {inp.text}"
         transcript = [{"role": "user", "content": inp.text}]
@@ -242,11 +254,22 @@ class WorkflowEvaluator:
                 use_responses_api=True, max_tokens=6000, temperature=0.0,
             )
             transcript.append({"role": "ka", "content": response})
+            last_turn = turn == _MAX_TURNS - 1
 
-            if _looks_like_json(response) or turn == _MAX_TURNS - 1:
+            if _looks_like_json(response):
+                structural = validate_workflow_json(response)
+                if structural.valid or last_turn:
+                    return response, transcript
+                reply = (
+                    "That didn't work — I tried to import it and got these "
+                    f"errors: {'; '.join(structural.errors)}. Can you fix it "
+                    "and send the corrected workflow JSON?"
+                )
+            elif last_turn:
                 return response, transcript
+            else:
+                reply = await self._simulate_user_reply(client, inp.text, response)
 
-            reply = await self._simulate_user_reply(client, inp.text, response)
             transcript.append({"role": "user", "content": reply})
             conversation = f"{conversation}\n\nAssistant: {response}\n\nUser: {reply}"
 

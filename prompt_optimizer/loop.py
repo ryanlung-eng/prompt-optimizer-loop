@@ -26,9 +26,10 @@ def _prompt_hash(text: str) -> str:
 def _print_score_table(
     node_name: str, iteration: int, results: List[EvalResult], dim_names: List[str]
 ) -> float:
-    in_dist = [r for r in results if not r.input.is_ood]
-    ood = [r for r in results if r.input.is_ood]
-
+    # OOD is permanently empty for this optimizer (see synthetic_data.py — OOD
+    # refusal belongs to the earlier conversation node, not Workflow Builder),
+    # so there's no OOD column here anymore — it would only ever show a
+    # misleading 0.000 with nothing behind it.
     avg_overall = sum(r.weighted_score for r in results) / max(len(results), 1)
     dim_avgs = {
         d: sum(r.scores.get(d, 0.0) for r in results) / max(len(results), 1)
@@ -37,28 +38,18 @@ def _print_score_table(
 
     table = Table(title=f"[bold]Node: {node_name} | Iteration {iteration}[/bold]")
     table.add_column("Metric", style="cyan")
-    table.add_column("In-dist", justify="right")
-    table.add_column("OOD", justify="right")
-    table.add_column("Overall", justify="right")
+    table.add_column("Score", justify="right")
     table.add_column("", justify="center")
 
     for dim in dim_names:
-        ind_score = (
-            sum(r.scores.get(dim, 0.0) for r in in_dist) / max(len(in_dist), 1)
-            if in_dist else 0.0
-        )
-        ood_score = (
-            sum(r.scores.get(dim, 0.0) for r in ood) / max(len(ood), 1)
-            if ood else 0.0
-        )
         overall_score = dim_avgs[dim]
         status = "✓" if overall_score >= 0.8 else "⚠" if overall_score >= 0.6 else "✗"
-        table.add_row(dim, f"{ind_score:.3f}", f"{ood_score:.3f}", f"{overall_score:.3f}", status)
+        table.add_row(dim, f"{overall_score:.3f}", status)
 
     table.add_section()
     status = "[green]PASS[/green]" if avg_overall >= 0.85 else "[red]FAIL[/red]"
     table.add_row(
-        "[bold]OVERALL[/bold]", "", "", f"[bold]{avg_overall:.3f}[/bold]", status
+        "[bold]OVERALL[/bold]", f"[bold]{avg_overall:.3f}[/bold]", status
     )
 
     # Deterministic structural check — did the KA actually produce valid n8n JSON,
@@ -72,23 +63,9 @@ def _print_score_table(
     structurally_valid = sum(1 for r in results if r.structural.valid)
     attempted_not_valid = sum(1 for r in results if r.ever_attempted_json and not r.structural.valid)
     never_attempted = n - structurally_valid - attempted_not_valid
-    table.add_row(
-        "[dim]Never produced JSON[/dim]", "", "", f"[dim]{never_attempted}/{n}[/dim]", ""
-    )
-    table.add_row(
-        "[dim]Attempted, still invalid[/dim]", "", "", f"[dim]{attempted_not_valid}/{n}[/dim]", ""
-    )
-    table.add_row(
-        "[dim]Structurally valid[/dim]", "", "", f"[dim]{structurally_valid}/{n}[/dim]", ""
-    )
-
-    # OOD pushback summary row
-    if ood:
-        ood_refused = sum(1 for r in ood if r.scores.get("intent_understanding", 0) >= 0.7)
-        table.add_row(
-            "[dim]OOD pushback[/dim]", "", "",
-            f"[dim]{ood_refused}/{len(ood)} correct[/dim]", ""
-        )
+    table.add_row("[dim]Never produced JSON[/dim]", f"[dim]{never_attempted}/{n}[/dim]", "")
+    table.add_row("[dim]Attempted, still invalid[/dim]", f"[dim]{attempted_not_valid}/{n}[/dim]", "")
+    table.add_row("[dim]Structurally valid[/dim]", f"[dim]{structurally_valid}/{n}[/dim]", "")
 
     console.print(table)
     return avg_overall

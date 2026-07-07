@@ -79,7 +79,12 @@ def _resolve_prompt(system_prompt: str, conversation: str, inp: SyntheticInput) 
 
 
 def _looks_like_json(text: str) -> bool:
-    return text.strip().startswith("{")
+    # Checking only the leading "{" let a mid-conversation reply that happens
+    # to start with a brace (for any unrelated reason) get treated as "final"
+    # prematurely, which then fed a malformed fragment into the structural
+    # validator's JSON parser instead of continuing the conversation.
+    t = text.strip()
+    return t.startswith("{") and t.endswith("}")
 
 
 class WorkflowEvaluator:

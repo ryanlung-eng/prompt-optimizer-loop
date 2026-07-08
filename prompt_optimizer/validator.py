@@ -43,11 +43,23 @@ def _check_unknown_parameters(workflow: dict) -> List[str]:
         _node_unavailable = True
         return []
 
-    _node_unavailable = False
     try:
         result = json.loads(proc.stdout)
     except json.JSONDecodeError:
+        _node_unavailable = False
         return []
+
+    setup_error = result.get("setupError")
+    if setup_error:
+        # Same failure every call (missing npm deps, not a per-node issue) —
+        # print once and stop spawning the subprocess for the rest of the
+        # run, instead of repeating this per node per turn per input.
+        if _node_unavailable is None:
+            print(f"  Warning: n8n schema parameter check unavailable — {setup_error}")
+        _node_unavailable = True
+        return []
+
+    _node_unavailable = False
     for w in result.get("warnings") or []:
         print(f"  Warning: n8n schema check couldn't fully validate node {w}")
     return [

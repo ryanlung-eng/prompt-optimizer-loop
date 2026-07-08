@@ -102,6 +102,16 @@ function checkNode(node) {
   return unknown.length ? { node: node.name, type: node.type, unknownParams: unknown } : null;
 }
 
+// A missing n8n-workflow/n8n-nodes-base/n8n-core install fails EVERY node
+// with the same MODULE_NOT_FOUND — that's one setup problem, not N separate
+// per-node problems. Detected once and reported as a single setupError so
+// the caller can print one message and stop invoking this script for the
+// rest of the run, instead of the same warning repeating per node per turn.
+function isMissingOwnDependency(e) {
+  return e && e.code === "MODULE_NOT_FOUND" &&
+    /n8n-workflow|n8n-nodes-base|n8n-core/.test(String(e.message || ""));
+}
+
 function main() {
   let raw = "";
   process.stdin.on("data", (chunk) => (raw += chunk));
@@ -115,11 +125,18 @@ function main() {
           const finding = checkNode(node);
           if (finding) issues.push(finding);
         } catch (e) {
-          // A node's schema failing to load/resolve (e.g. a missing peer
-          // dependency) is NOT the same as "unrecognized node type" — the
-          // latter is an expected, silent skip; this is a real setup problem
-          // that would otherwise silently look like "no issues found" for
-          // that node. Surface it instead of swallowing it.
+          if (isMissingOwnDependency(e)) {
+            process.stdout.write(JSON.stringify({
+              issues: [],
+              warnings: [],
+              setupError: "npm packages not installed — run 'npm install --ignore-scripts' "
+                + "in prompt_optimizer/n8n_schema_check/. (" + String((e && e.message) || e) + ")",
+            }));
+            return;
+          }
+          // A node's schema failing to load/resolve for some OTHER reason
+          // (not our own missing deps) is a real, node-specific problem —
+          // surface it instead of swallowing it, but keep checking the rest.
           warnings.push(`${node.name} (${node.type}): ${String((e && e.message) || e)}`);
         }
       }

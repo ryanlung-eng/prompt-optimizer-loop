@@ -129,8 +129,13 @@ function main() {
             process.stdout.write(JSON.stringify({
               issues: [],
               warnings: [],
-              setupError: "npm packages not installed — run 'npm install --ignore-scripts' "
-                + "in prompt_optimizer/n8n_schema_check/. (" + String((e && e.message) || e) + ")",
+              setupError: "npm packages not installed — copy check_params.js and package.json to "
+                + "local scratch space (e.g. /tmp/n8n_schema_check_cache/) and run "
+                + "'npm install --ignore-scripts' there. Don't install into this file's own "
+                + "directory if it's inside a git-synced Workspace folder — node_modules' symlinks "
+                + "(e.g. node_modules/.bin/*) can break Databricks Repos' git-status UI, and a "
+                + "network-backed /Workspace filesystem makes every cold require() much slower "
+                + "than local disk. (" + String((e && e.message) || e) + ")",
             }));
             return;
           }

@@ -20,24 +20,29 @@ from typing import List, Optional
 # *required* fields, since an unrecognized key is just silently ignored at
 # runtime rather than erroring. check_params.js compares against each node
 # type's own declared schema instead, which does catch it. Optional: skipped
-# (not penalized) if Node.js/the npm deps aren't set up in this environment —
-# see prompt_optimizer/n8n_schema_check/.
+# (not penalized) if Node.js/the npm deps aren't set up.
+#
+# Setup: copy check_params.js + package.json to local scratch space (e.g.
+# /tmp/n8n_schema_check_cache/, the same path _LOCAL_CACHE_DIR below expects)
+# and run `npm install --ignore-scripts` there. Deliberately NOT inside this
+# module's own directory if that lives in a git-synced Databricks Workspace
+# folder — node_modules' ~67k files/symlinks (npm's node_modules/.bin/*
+# pattern) can break Databricks Repos' git-status UI, and a network-backed
+# /Workspace filesystem makes every cold require() dramatically slower than
+# local disk (this is what caused the check to time out before this comment
+# was written). This file itself (check_params.js) still lives in the repo,
+# tracked and pulled normally — only its node_modules needs to live outside it.
 _SCHEMA_CHECK_SCRIPT = Path(__file__).parent / "n8n_schema_check" / "check_params.js"
-# Generous — Databricks /Workspace paths can be network-backed, making
-# n8n-nodes-base's large require() tree noticeably slower to cold-load than
-# on local disk (sub-second locally; seen taking >10s there).
 _SCHEMA_CHECK_TIMEOUT = 30
 _node_unavailable: Optional[bool] = None
 _timeout_warned = False
 
-# node_modules here is ~630MB / ~67k files (n8n-nodes-base + n8n-workflow +
-# n8n-core). Node's module resolution does several filesystem stats per
-# require() across that whole tree — fine on local disk, but painfully slow
-# over a network-backed filesystem like Databricks' /Workspace path (this is
-# almost certainly why the check was timing out there). Copied once to local
-# scratch space and reused from there — /tmp is tied to the cluster's local
-# disk, so this survives Python kernel restarts and only re-copies after a
-# full cluster restart.
+# Preferred source for _local_script_path() below — if setup followed the
+# instructions above, this already has node_modules installed and the copy
+# step is skipped entirely. Falls back to copying from _SCHEMA_CHECK_SCRIPT's
+# own directory (the Workspace-synced repo) only if nothing is here yet —
+# that fallback existing is what caused the git-status/UI breakage, so it's
+# a safety net for un-set-up environments, not the intended steady state.
 _LOCAL_CACHE_DIR = Path(tempfile.gettempdir()) / "n8n_schema_check_cache"
 
 
@@ -69,8 +74,9 @@ def _check_unknown_parameters(workflow: dict) -> List[str]:
         # The node binary itself missing won't change mid-run — stop trying
         # entirely instead of re-attempting (and re-printing) on every call.
         if _node_unavailable is None:
-            print(f"  Warning: n8n schema parameter check unavailable ({e}) — "
-                  f"skipping; see prompt_optimizer/n8n_schema_check/ for setup.")
+            print(f"  Warning: n8n schema parameter check unavailable ({e}) — skipping. "
+                  f"Setup: install Node.js, then see the setup comment above "
+                  f"_LOCAL_CACHE_DIR in this file (prompt_optimizer/validator.py).")
         _node_unavailable = True
         return []
     except subprocess.TimeoutExpired:

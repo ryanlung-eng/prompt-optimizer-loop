@@ -24,16 +24,25 @@ from .config import DatabricksConfig
 from .synthetic_data import SyntheticInput
 from .validator import validate_workflow_json
 
-# Hashes THIS file's own source plus validator.py's — both directly determine
-# how a conversation plays out (self-repair trigger logic, what counts as
-# "valid"), not just the prompt text. Baked into the cache key below so any
-# change here automatically invalidates stale cached conversations, instead
-# of relying on remembering to bump a version number by hand. This is exactly
-# the bug that let 48/56 conversations get served from cache generated under
-# the OLD, pre-fix self-repair logic, re-scored by the NEW judge — making a
-# stale result look like the fix had been validated when it hadn't.
+# Hashes THIS file's own source, validator.py's, AND check_params.js's — all
+# three directly determine how a conversation plays out (self-repair trigger
+# logic, what counts as "valid"), not just the prompt text. Baked into the
+# cache key below so any change here automatically invalidates stale cached
+# conversations, instead of relying on remembering to bump a version number
+# by hand. check_params.js is invoked via subprocess rather than imported,
+# so it's easy to forget — exactly what happened here: three straight
+# hallucination-detection bug fixes to it never invalidated the cache at
+# all, because only the two .py files were being hashed. That let stale
+# multi-turn transcripts (generated back when check_params.js was still
+# feeding the KA bogus "invalid parameter" errors during self-repair) keep
+# getting served and re-scored by the judge, making old, already-fixed bugs
+# look like they were still happening.
 _LOGIC_VERSION = hashlib.sha256(
-    (Path(__file__).read_text() + Path(_validator_module.__file__).read_text()).encode()
+    (
+        Path(__file__).read_text()
+        + Path(_validator_module.__file__).read_text()
+        + _validator_module._SCHEMA_CHECK_SCRIPT.read_text()
+    ).encode()
 ).hexdigest()[:16]
 
 # Multi-turn conversations mean each concurrent "slot" can burst up to

@@ -21,11 +21,16 @@ from typing import List, Optional
 # (not penalized) if Node.js/the npm deps aren't set up in this environment —
 # see prompt_optimizer/n8n_schema_check/.
 _SCHEMA_CHECK_SCRIPT = Path(__file__).parent / "n8n_schema_check" / "check_params.js"
+# Generous — Databricks /Workspace paths can be network-backed, making
+# n8n-nodes-base's large require() tree noticeably slower to cold-load than
+# on local disk (sub-second locally; seen taking >10s there).
+_SCHEMA_CHECK_TIMEOUT = 30
 _node_unavailable: Optional[bool] = None
+_timeout_warned = False
 
 
 def _check_unknown_parameters(workflow: dict) -> List[str]:
-    global _node_unavailable
+    global _node_unavailable, _timeout_warned
     if _node_unavailable:
         return []
     try:
@@ -34,13 +39,25 @@ def _check_unknown_parameters(workflow: dict) -> List[str]:
             input=json.dumps(workflow),
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_SCHEMA_CHECK_TIMEOUT,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+    except FileNotFoundError as e:
+        # The node binary itself missing won't change mid-run — stop trying
+        # entirely instead of re-attempting (and re-printing) on every call.
         if _node_unavailable is None:
             print(f"  Warning: n8n schema parameter check unavailable ({e}) — "
                   f"skipping; see prompt_optimizer/n8n_schema_check/ for setup.")
         _node_unavailable = True
+        return []
+    except subprocess.TimeoutExpired:
+        # A slow filesystem or a one-off hiccup isn't the same as "broken" —
+        # skip just this call and keep retrying later ones, rather than
+        # disabling the check for the rest of the run over one slow call.
+        if not _timeout_warned:
+            print(f"  Warning: n8n schema parameter check timed out "
+                  f"(>{_SCHEMA_CHECK_TIMEOUT}s) for one workflow — skipping just "
+                  f"this check; will keep retrying on later calls.")
+            _timeout_warned = True
         return []
 
     try:

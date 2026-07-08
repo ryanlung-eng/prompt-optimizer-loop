@@ -121,21 +121,23 @@ optimizer:
   worst_examples_k: 6        # Bottom-K fed to Haiku for failure analysis
 
 judge:
-  # Weights must sum to 1.0
+  # Weights must sum to 1.0. Equal by default — there's no calibration data
+  # showing one dimension's failures matter more than another's, so an
+  # uneven split would just be an unfounded guess dressed up as a decision.
+  # Revisit only if real evidence (e.g. observed failure severity) justifies it.
+  #
   # workflow_accuracy was retired as a judge dimension: its "technically
   # correct n8n node structure" half is now covered more reliably by
   # validator.py's deterministic structural + schema-parameter checks, and
   # its "schedule/timezone correctness" half (not deterministically
   # checkable — a syntactically valid cron expression can still be the wrong
-  # one) was folded into completeness below. Its 0.25 weight was
-  # redistributed, with completeness getting the largest share to reflect
-  # its expanded scope.
+  # one) was folded into completeness below.
   dimensions:
     - name: intent_understanding
-      weight: 0.30
+      weight: 0.25
       description: "Correctly identified trigger, output(s), and approval requirements"
     - name: clarity
-      weight: 0.20
+      weight: 0.25
       description: "Understandable to a non-technical user; no jargon"
     - name: completeness
       weight: 0.25

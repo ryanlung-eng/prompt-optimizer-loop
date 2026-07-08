@@ -1,0 +1,11 @@
+{
+  "name": "n8n-schema-check",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Flags workflow-JSON node parameters that don't exist in n8n's own declared schema for that node type/version — catches invented/hallucinated parameter names that n8n's own NodeHelpers validation and workflow activation both silently ignore.",
+  "dependencies": {
+    "n8n-core": "^1.0.0",
+    "n8n-nodes-base": "^1.0.0",
+    "n8n-workflow": "^1.0.0"
+  }
+}

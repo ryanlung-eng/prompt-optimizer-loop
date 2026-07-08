@@ -7,8 +7,54 @@ response text. Mirrors the checks built earlier for the real n8n
 Validator Parser / Code in JavaScript nodes in the automation-builder workflow.
 """
 import json
+import subprocess
 from dataclasses import dataclass, field
-from typing import List
+from pathlib import Path
+from typing import List, Optional
+
+# Neither n8n's own NodeHelpers.getNodeParametersIssues nor workflow
+# activation catch invented/hallucinated parameter names (verified directly
+# against n8n-workflow/n8n-nodes-base source) — both only flag missing
+# *required* fields, since an unrecognized key is just silently ignored at
+# runtime rather than erroring. check_params.js compares against each node
+# type's own declared schema instead, which does catch it. Optional: skipped
+# (not penalized) if Node.js/the npm deps aren't set up in this environment —
+# see prompt_optimizer/n8n_schema_check/.
+_SCHEMA_CHECK_SCRIPT = Path(__file__).parent / "n8n_schema_check" / "check_params.js"
+_node_unavailable: Optional[bool] = None
+
+
+def _check_unknown_parameters(workflow: dict) -> List[str]:
+    global _node_unavailable
+    if _node_unavailable:
+        return []
+    try:
+        proc = subprocess.run(
+            ["node", str(_SCHEMA_CHECK_SCRIPT)],
+            input=json.dumps(workflow),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        if _node_unavailable is None:
+            print(f"  Warning: n8n schema parameter check unavailable ({e}) — "
+                  f"skipping; see prompt_optimizer/n8n_schema_check/ for setup.")
+        _node_unavailable = True
+        return []
+
+    _node_unavailable = False
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+    for w in result.get("warnings") or []:
+        print(f"  Warning: n8n schema check couldn't fully validate node {w}")
+    return [
+        f"Node '{issue['node']}' ({issue['type']}) uses parameter(s) not in n8n's "
+        f"schema for that node type — likely invented/hallucinated: {issue['unknownParams']}"
+        for issue in result.get("issues") or []
+    ]
 
 
 @dataclass
@@ -112,5 +158,9 @@ def validate_workflow_json(text: str) -> StructuralResult:
     checks["has_trigger_node"] = has_trigger if nodes else False
     if nodes and not has_trigger:
         result.errors.append("No node type contains 'trigger' — workflow has no entry point.")
+
+    unknown_param_errors = _check_unknown_parameters(workflow)
+    checks["no_unknown_parameters"] = len(unknown_param_errors) == 0
+    result.errors.extend(unknown_param_errors)
 
     return result

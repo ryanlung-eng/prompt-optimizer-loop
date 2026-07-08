@@ -122,19 +122,24 @@ optimizer:
 
 judge:
   # Weights must sum to 1.0
+  # workflow_accuracy was retired as a judge dimension: its "technically
+  # correct n8n node structure" half is now covered more reliably by
+  # validator.py's deterministic structural + schema-parameter checks, and
+  # its "schedule/timezone correctness" half (not deterministically
+  # checkable — a syntactically valid cron expression can still be the wrong
+  # one) was folded into completeness below. Its 0.25 weight was
+  # redistributed, with completeness getting the largest share to reflect
+  # its expanded scope.
   dimensions:
     - name: intent_understanding
-      weight: 0.25
+      weight: 0.30
       description: "Correctly identified trigger, output(s), and approval requirements"
-    - name: workflow_accuracy
-      weight: 0.25
-      description: "Technically correct n8n node structure; correct pushback for OOD requests"
     - name: clarity
-      weight: 0.15
+      weight: 0.20
       description: "Understandable to a non-technical user; no jargon"
     - name: completeness
-      weight: 0.15
-      description: "Every user-specified detail (account, channel, schedule, mapping) reflected"
+      weight: 0.25
+      description: "Every user-specified detail (account, channel, schedule, mapping) reflected accurately — including correct timezone/DST handling for any schedule, not just that a schedule exists"
     - name: knowledge_honesty
-      weight: 0.20
+      weight: 0.25
       description: "No hallucinated credentials or integrations; admits gaps; pushes back on unsupported requests"

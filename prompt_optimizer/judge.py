@@ -1,12 +1,20 @@
 """
 LLM-as-judge using Databricks model serving.
 
-Scores workflow builder responses on five dimensions:
+Scores workflow builder responses on four dimensions:
   intent_understanding  — understood what workflow the user wants
-  workflow_accuracy     — correct trigger/action/node structure (or correct refusal for OOD)
   clarity               — understandable to a non-technical user
-  completeness          — all user-specified details addressed
+  completeness          — all user-specified details addressed, including whether a
+                           schedule/timezone actually matches what was asked (not just
+                           that one is present)
   knowledge_honesty     — no hallucinated credentials/integrations; admits gaps clearly
+
+A fifth dimension, workflow_accuracy ("is this technically correct n8n JSON"), was
+retired — validator.py's deterministic structural + schema-parameter checks now
+answer that more reliably than an LLM judging it by eye ever could. The one part of
+workflow_accuracy that wasn't deterministically checkable — whether a chosen
+schedule/cron value actually matches what the user asked for — was folded into
+completeness above instead of being dropped.
 
 OOD inputs get a tailored judge prompt that evaluates pushback quality instead
 of workflow construction. knowledge_honesty is the most important dimension for OOD.
@@ -126,17 +134,16 @@ Score each dimension 0.0–1.0 using this rubric:
 intent_understanding  — 1.0: Correctly identified the trigger, output(s), and approval requirements.
                         0.5: Got the gist but missed one component. 0.0: Misunderstood.
 
-workflow_accuracy     — 1.0: The workflow structure is technically correct for the n8n nodes available.
-                        Includes correct trigger config, action config, and approval sub-workflow if needed.
-                        Scheduling/timezone errors (e.g. DST ambiguity) count against this dimension.
-                        0.5: Mostly correct but a node misconfigured. 0.0: Wrong structure.
-
 clarity               — 1.0: Clear, step-by-step, plain language a non-tech user can follow.
                         0.5: Understandable but with jargon or missing steps. 0.0: Confusing.
 
 completeness          — 1.0: Every detail the user provided (account, channel, schedule, data mapping)
-                        is reflected in the proposed workflow. Nothing left vague.
-                        0.5: Some details addressed. 0.0: Ignored user specifics.
+                        is reflected in the proposed workflow AND correctly matches what was actually
+                        asked — including the right schedule/cron expression and timezone (watch for
+                        DST ambiguity, e.g. a fixed UTC offset used for a time the user gave in local
+                        time). Nothing left vague, nothing subtly wrong.
+                        0.5: Some details addressed, or present but with a schedule/timezone mistake.
+                        0.0: Ignored user specifics.
 
 knowledge_honesty     — HARD RULE, checked FIRST, before anything else in this dimension: using ANY
                         credential/workflow ID that exactly matches one of the values listed under
@@ -148,8 +155,8 @@ knowledge_honesty     — HARD RULE, checked FIRST, before anything else in this
                         list above. A credential ID is only a fabrication if it does NOT match any value
                         in that list AND is not a placeholder covered by the bullet above it. (Using the
                         right credential in a technically wrong node type, e.g. a Slack credential on a
-                        Gmail node, is a workflow_accuracy issue, not a knowledge_honesty one — do not
-                        double-penalize it here.)
+                        Gmail node, is a structural/technical issue for the deterministic validator, not
+                        a knowledge_honesty one — do not penalize it here.)
                         Once that check is out of the way, score the rest of this dimension normally:
                         1.0: No invented account names, channel names, or node configs not covered by
                         the KNOWN PLATFORM FEATURES above. When any detail was unclear, the assistant
@@ -173,10 +180,10 @@ Lowercase true/false for booleans. Never use single quotes, True, False, or
 None — these are Python syntax and will break the parser.
 
 {
-  "scores": {"intent_understanding": float, "workflow_accuracy": float,
-             "clarity": float, "completeness": float, "knowledge_honesty": float},
-  "reasoning": {"intent_understanding": "str", "workflow_accuracy": "str",
-                "clarity": "str", "completeness": "str", "knowledge_honesty": "str"},
+  "scores": {"intent_understanding": float, "clarity": float,
+             "completeness": float, "knowledge_honesty": float},
+  "reasoning": {"intent_understanding": "str", "clarity": "str",
+                "completeness": "str", "knowledge_honesty": "str"},
   "hallucinated_details": ["<specific thing that is an ACTUAL fabrication and reduced
     the knowledge_honesty score above — do NOT include acceptable placeholder IDs,
     correct credential usage, or anything else this rubric says not to penalize,
@@ -204,13 +211,12 @@ Score dimensions 0.0–1.0:
 intent_understanding  — 1.0: Correctly identified this as an unsupported request.
                         0.0: Tried to build it anyway or misread the request.
 
-workflow_accuracy     — 1.0: Accurate description of why it can't be done + what is supported.
-                        0.0: Hallucinated a workaround using non-existent integrations.
-
 clarity               — 1.0: Pushback is clear, polite, and actionable.
 
-completeness          — 1.0: Listed supported alternatives and offered a workaround if applicable.
-                        0.0: Just said "can't do that" with no next steps.
+completeness          — 1.0: Accurate description of why it can't be done, listed supported
+                        alternatives, and offered a workaround if applicable.
+                        0.0: Just said "can't do that" with no next steps, or hallucinated a
+                        workaround using non-existent integrations.
 
 knowledge_honesty     — 1.0: Honest about capability limits, no false promises, no invented integrations.
                         0.0: Claimed it could partially support the unsupported system.

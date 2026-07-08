@@ -37,8 +37,39 @@ const NODE_TYPE_MAP = {
 
 // Protocol-level wrapper keys used by n8n's resourceLocator field shape
 // ({__rl: true, value, mode, cachedResultName, ...}) — not user-declared
-// schema properties, so never flag these as unknown.
-const WRAPPER_KEYS = new Set(["__rl", "mode", "value", "cachedResultName", "cachedResultUrl"]);
+// schema properties, so never flag these as unknown. Recursing into them is
+// harmless here since they're primitives, unlike OPAQUE_KEYS below.
+const WRAPPER_KEYS = new Set(["__rl", "mode", "cachedResultName", "cachedResultUrl"]);
+
+// Keys whose contents are legitimately free-form and must never be checked
+// at all, not even recursed into — resourceMapper's "value" object maps to
+// whatever the target resource's own fields are (a called sub-workflow's
+// declared inputs, a sheet's column names, ...), which this offline schema
+// check has no way to know and shouldn't guess at. (Also covers
+// resourceLocator's "value", which is just a plain string/ID — recursing
+// into a primitive is already a no-op, so folding it in here too is safe.)
+const OPAQUE_KEYS = new Set(["value"]);
+
+// n8n's shared composite parameter types (filter, resourceMapper,
+// assignmentCollection) have a FIXED runtime value shape defined by n8n's
+// own TypeScript interfaces (FilterValue, FilterConditionValue,
+// FilterOperatorValue, FilterOptionsValue, ResourceMapperValue,
+// AssignmentCollectionValue, AssignmentValue — verified directly against
+// n8n-workflow's interfaces.d.ts), not declared via the property's own
+// .options array the way collection/fixedCollection are. Treating "unknown
+// to our .options recursion" as "invented" for these was a real bug: it
+// flagged genuine, standard fields like leftValue/operator/combinator (real
+// filter-condition fields) and mappingMode/value (real resourceMapper
+// fields — mappingMode/value is literally n8n's own default value shape
+// for it) as hallucinated.
+const COMPOSITE_TYPE_KEYS = {
+  filter: ["options", "conditions", "combinator", "caseSensitive", "leftValue",
+           "typeValidation", "version", "id", "operator", "rightValue",
+           "type", "operation", "rightType", "singleValue"],
+  resourceMapper: ["mappingMode", "value", "matchingColumns", "schema",
+                   "attemptToConvertTypes", "convertFieldsToString"],
+  assignmentCollection: ["assignments", "id", "name", "value", "type"],
+};
 
 const instanceCache = new Map();
 
@@ -74,6 +105,8 @@ function collectDeclaredNames(properties, set = new Set()) {
         set.add(opt.name);
         if (Array.isArray(opt.values)) collectDeclaredNames(opt.values, set);
       }
+    } else if (COMPOSITE_TYPE_KEYS[prop.type]) {
+      for (const k of COMPOSITE_TYPE_KEYS[prop.type]) set.add(k);
     }
   }
   return set;
@@ -86,6 +119,7 @@ function collectUsedKeys(obj, set = new Set()) {
     return set;
   }
   for (const [k, v] of Object.entries(obj)) {
+    if (OPAQUE_KEYS.has(k)) continue; // free-form contents — don't add, don't recurse
     if (!WRAPPER_KEYS.has(k)) set.add(k);
     collectUsedKeys(v, set);
   }

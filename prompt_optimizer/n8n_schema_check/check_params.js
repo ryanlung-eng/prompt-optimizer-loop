@@ -17,6 +17,21 @@
  *
  * Output (stdout, always valid JSON): {"issues": [{"node", "type", "unknownParams"}]}
  */
+// n8n's node loader auto-injects a shared "Poll Times" fixedCollection
+// (pollTimes -> {item: [{mode, ...}]}) into every node with description
+// .polling === true — it's never declared in the individual node's own
+// .properties array, which is why GmailTrigger/GoogleCalendarTrigger/etc.
+// all show no "pollTimes" property directly even though real generated
+// workflows correctly use it. Verified against the actual source:
+// n8n-core/dist/nodes-loader/constants.js.
+let commonPollingParameters = [];
+try {
+  ({ commonPollingParameters } = require("n8n-core/dist/nodes-loader/constants.js"));
+} catch (e) {
+  // Missing/renamed in some n8n-core version — degrade to not knowing about
+  // pollTimes rather than crashing the whole check over one shared constant.
+}
+
 const NODE_TYPE_MAP = {
   "n8n-nodes-base.scheduleTrigger": ["n8n-nodes-base/dist/nodes/Schedule/ScheduleTrigger.node.js", "ScheduleTrigger"],
   "n8n-nodes-base.cron": ["n8n-nodes-base/dist/nodes/Cron/Cron.node.js", "Cron"],
@@ -131,6 +146,7 @@ function checkNode(node) {
   if (!inst) return null; // unrecognized type — not our concern, skip silently
   const desc = getDescriptionForVersion(inst, node.typeVersion);
   const declared = collectDeclaredNames(desc.properties);
+  if (desc.polling) collectDeclaredNames(commonPollingParameters, declared);
   const used = collectUsedKeys(node.parameters);
   const unknown = [...used].filter((k) => !declared.has(k));
   return unknown.length ? { node: node.name, type: node.type, unknownParams: unknown } : null;

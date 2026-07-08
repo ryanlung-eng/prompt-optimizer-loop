@@ -7,7 +7,9 @@ response text. Mirrors the checks built earlier for the real n8n
 Validator Parser / Code in JavaScript nodes in the automation-builder workflow.
 """
 import json
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -28,6 +30,28 @@ _SCHEMA_CHECK_TIMEOUT = 30
 _node_unavailable: Optional[bool] = None
 _timeout_warned = False
 
+# node_modules here is ~630MB / ~67k files (n8n-nodes-base + n8n-workflow +
+# n8n-core). Node's module resolution does several filesystem stats per
+# require() across that whole tree — fine on local disk, but painfully slow
+# over a network-backed filesystem like Databricks' /Workspace path (this is
+# almost certainly why the check was timing out there). Copied once to local
+# scratch space and reused from there — /tmp is tied to the cluster's local
+# disk, so this survives Python kernel restarts and only re-copies after a
+# full cluster restart.
+_LOCAL_CACHE_DIR = Path(tempfile.gettempdir()) / "n8n_schema_check_cache"
+
+
+def _local_script_path() -> Path:
+    local_script = _LOCAL_CACHE_DIR / "check_params.js"
+    if not local_script.exists():
+        try:
+            shutil.copytree(_SCHEMA_CHECK_SCRIPT.parent, _LOCAL_CACHE_DIR, dirs_exist_ok=True)
+        except OSError as e:
+            print(f"  Warning: couldn't copy n8n schema check to local disk ({e}) — "
+                  f"running from its original (possibly slower) location instead.")
+            return _SCHEMA_CHECK_SCRIPT
+    return local_script
+
 
 def _check_unknown_parameters(workflow: dict) -> List[str]:
     global _node_unavailable, _timeout_warned
@@ -35,7 +59,7 @@ def _check_unknown_parameters(workflow: dict) -> List[str]:
         return []
     try:
         proc = subprocess.run(
-            ["node", str(_SCHEMA_CHECK_SCRIPT)],
+            ["node", str(_local_script_path())],
             input=json.dumps(workflow),
             capture_output=True,
             text=True,

@@ -81,8 +81,18 @@ const COMPOSITE_TYPE_KEYS = {
   filter: ["options", "conditions", "combinator", "caseSensitive", "leftValue",
            "typeValidation", "version", "id", "operator", "rightValue",
            "type", "operation", "rightType", "singleValue"],
+  // "schema" is an array of ResourceMapperField, each with its OWN fixed
+  // shape (id, displayName, defaultMatch, canBeUsedToMatch, required,
+  // display, type, removed, options, readOnly, defaultValue) — distinct
+  // from "value"'s genuinely free-form contents. Missing these caused a
+  // real false positive on an actual user workflow (not just a synthetic
+  // eval case): every schema entry's own field names got flagged as
+  // invented.
   resourceMapper: ["mappingMode", "value", "matchingColumns", "schema",
-                   "attemptToConvertTypes", "convertFieldsToString"],
+                   "attemptToConvertTypes", "convertFieldsToString",
+                   "id", "displayName", "defaultMatch", "canBeUsedToMatch",
+                   "required", "display", "type", "removed", "options",
+                   "readOnly", "defaultValue"],
   assignmentCollection: ["assignments", "id", "name", "value", "type"],
 };
 

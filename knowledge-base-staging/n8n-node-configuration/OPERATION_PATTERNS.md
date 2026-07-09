@@ -238,7 +238,7 @@ Popular choice for AI agent workflows
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general",
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },
   "text": "Hello from n8n!"
 }
 ```
@@ -248,7 +248,7 @@ Popular choice for AI agent workflows
 {
   "resource": "message",
   "operation": "post",
-  "channel": "={{$json.channel}}",
+  "channelId": { "__rl": true, "value": "={{$json.channelId}}", "mode": "id" },
   "text": "New user: {{$json.name}} ({{$json.email}})"
 }
 ```
@@ -258,7 +258,7 @@ Popular choice for AI agent workflows
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#alerts",
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },
   "text": "Error Alert",
   "attachments": [
     {
@@ -278,7 +278,7 @@ Popular choice for AI agent workflows
 }
 ```
 
-**Gotcha**: Channel must start with `#` for public channels or be a channel ID!
+**Gotcha**: There is no plain `channel` string parameter on any Slack operation. Every operation that targets an existing channel uses `channelId` — a resourceLocator object (`{"__rl": true, "value": "...", "mode": "id"}`), never a bare string. `mode` can also be `"list"` (channel picker in the UI) or `"url"` (paste a Slack link); `"id"` is simplest for programmatically-generated workflows.
 
 #### Update Message
 
@@ -292,7 +292,7 @@ Popular choice for AI agent workflows
 }
 ```
 
-**Note**: `messageId` required, `channel` optional (can be inferred)
+**Note**: `messageId` required, `channelId` optional (can be inferred) — same resourceLocator shape as Post Message if provided.
 
 #### Create Channel
 
@@ -301,12 +301,12 @@ Popular choice for AI agent workflows
 {
   "resource": "channel",
   "operation": "create",
-  "name": "new-project-channel",  // Lowercase, no spaces
-  "isPrivate": false
+  "channelId": "new-project-channel",  // The NEW channel's name — plain string here (not a resourceLocator; that's only for selecting an *existing* channel), lowercase, no spaces
+  "channelVisibility": "public"  // or "private" — NOT "isPrivate"
 }
 ```
 
-**Gotcha**: Channel name must be lowercase, no spaces, 1-80 chars!
+**Gotcha**: For "create", the name field is confusingly also called `channelId` (a plain string, unlike every other operation's resourceLocator), and visibility is `channelVisibility` (`"public"`/`"private"`), not a boolean `isPrivate`. Channel name must be lowercase, no spaces, 1-80 chars.
 
 ---
 
@@ -975,6 +975,37 @@ AI operations - 234 templates
 
 ---
 
+## Trigger Nodes
+
+### Jira Trigger (nodes-base.jiraTrigger)
+
+Fires on Jira issue/comment events via webhook
+
+#### Minimal
+
+```javascript
+{
+  "jiraVersion": "cloud",
+  "events": ["jira:issue_created"]
+}
+```
+
+#### Scoped to a project and label
+
+```javascript
+{
+  "jiraVersion": "cloud",
+  "events": ["jira:issue_created", "jira:issue_updated"],
+  "additionalFields": {
+    "filter": "project = XYZ AND labels = urgent"
+  }
+}
+```
+
+**Gotcha**: there is no dedicated `projectKey` or `labels` field. `additionalFields` only exposes `excludeBody`, `filter`, and `includeFields` — all project/label/status scoping happens through a JQL string in `filter`, the same query syntax you'd type into Jira's own issue search.
+
+---
+
 ## Schedule Nodes
 
 ### Schedule Trigger (nodes-base.scheduleTrigger)
@@ -1056,11 +1087,12 @@ Time-based workflows - 28% have schedule triggers
 |---|---|---|
 | HTTP/API | GET, POST JSON | Remember sendBody: true |
 | Webhooks | POST receiver | Data under $json.body |
-| Communication | Slack post | Channel format (#name) |
+| Communication | Slack post | channelId resourceLocator, never a plain `channel` string |
 | Database | SELECT with params | Use parameterized queries |
 | Transform | Set assignments | Correct type per field |
 | Conditional | IF string equals | Unary vs binary operators |
 | AI | OpenAI chat | System + user messages |
+| Trigger | Jira Trigger | Scope via JQL in `filter`, no dedicated project/label field |
 | Schedule | Daily at time | Set timezone explicitly |
 
 **Configuration Approach**:
@@ -1165,7 +1197,7 @@ Concrete minimal configs showing how required fields differ by resource + operat
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general",      // Required
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },  // Required — resourceLocator, never a plain string
   "text": "Hello!",           // Required
   "attachments": [],          // Optional
   "blocks": []                // Optional
@@ -1179,7 +1211,7 @@ Concrete minimal configs showing how required fields differ by resource + operat
   "operation": "update",
   "messageId": "1234567890",  // Required (different from post!)
   "text": "Updated!",         // Required
-  "channel": "#general"       // Optional (can be inferred)
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" }  // Optional (can be inferred)
 }
 ```
 
@@ -1188,8 +1220,8 @@ Concrete minimal configs showing how required fields differ by resource + operat
 {
   "resource": "channel",
   "operation": "create",
-  "name": "new-channel",      // Required
-  "isPrivate": false          // Optional
+  "channelId": "new-channel",     // Required — the NEW channel's name (plain string, despite the field name)
+  "channelVisibility": "public"   // Optional ("public"/"private", NOT isPrivate)
   // Note: text NOT required for this operation
 }
 ```

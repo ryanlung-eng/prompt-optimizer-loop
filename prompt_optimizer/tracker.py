@@ -177,9 +177,9 @@ class PromptTracker:
         os.unlink(tmp)
 
         return IterationSummary(
-            iteration=int(run.info.tags.get("iteration", 0)),
-            node_name=run.info.tags.get("node_name", ""),
-            prompt_version=run.info.tags.get("prompt_version", ""),
+            iteration=int(run.data.tags.get("iteration", 0)),
+            node_name=run.data.tags.get("node_name", ""),
+            prompt_version=run.data.tags.get("prompt_version", ""),
             prompt_text="",
             overall_score=avg_overall,
             dim_scores=dim_avgs,

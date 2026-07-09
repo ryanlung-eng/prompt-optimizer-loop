@@ -67,12 +67,23 @@ class OptimizerConfig:
 
 
 @dataclass
+class BenchmarkConfig:
+    # Which config.prompts[...] entry to benchmark (same prompt text used
+    # across all arms — see benchmark.py).
+    node_name: str = "Workflow Builder"
+    # Directory of flattened .md knowledge-base files to inject verbatim into
+    # the "knowledge injected" arm's prompt.
+    kb_path: str = "knowledge-base-upload"
+
+
+@dataclass
 class Config:
     prompts: Dict[str, str]   # node_name -> current prompt text, pasted in manually
     databricks: DatabricksConfig
     synthetic_data: SyntheticDataConfig
     optimizer: OptimizerConfig
     judge: JudgeConfig
+    benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
 
 
 def _resolve(value: str) -> str:
@@ -135,5 +146,11 @@ def load_config(path: str = "config.yaml") -> Config:
         dimensions=[JudgeDimension(**d) for d in raw["judge"]["dimensions"]],
     )
 
+    bm = raw.get("benchmark", {})
+    benchmark = BenchmarkConfig(
+        node_name=bm.get("node_name", "Workflow Builder"),
+        kb_path=bm.get("kb_path", "knowledge-base-upload"),
+    )
+
     return Config(prompts=prompts, databricks=databricks, synthetic_data=synthetic_data,
-                  optimizer=optimizer, judge=judge)
+                  optimizer=optimizer, judge=judge, benchmark=benchmark)

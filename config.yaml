@@ -123,6 +123,13 @@ optimizer:
   candidates_per_iteration: 3
   worst_examples_k: 6        # Bottom-K fed to Haiku for failure analysis
 
+benchmark:
+  # Used by workflow_builder_benchmark.py only — a separate, occasional-use
+  # comparison against a raw Claude endpoint, not part of the eval/optimize loop.
+  node_name: "Workflow Builder"          # which prompts[...] entry to benchmark
+  kb_path: "knowledge-base-upload"       # flattened .md files injected into the
+                                          # "knowledge_injected" arm's prompt
+
 judge:
   # Weights must sum to 1.0. Equal by default — there's no calibration data
   # showing one dimension's failures matter more than another's, so an

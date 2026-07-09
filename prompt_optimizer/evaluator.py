@@ -140,7 +140,7 @@ class WorkflowEvaluator:
                 print(f"  Warning: could not load conversation cache: {e}")
 
     @staticmethod
-    def _cache_key(system_prompt: str, inp: SyntheticInput) -> str:
+    def _cache_key(system_prompt: str, inp: SyntheticInput, endpoint_url: str = "") -> str:
         # system_prompt + inp.text + inp.time_saved_minutes are the only three
         # *inputs* that feed into the resolved prompt / conversation trajectory
         # (see _resolve_prompt) — together they fully determine the outcome
@@ -149,7 +149,12 @@ class WorkflowEvaluator:
         # just as capable of changing the outcome as a prompt change is — a
         # bare (prompt, input) key would silently keep serving conversations
         # generated under old, since-fixed conversation-handling logic.
-        raw = f"{system_prompt}:::{inp.text}:::{inp.time_saved_minutes}:::{_LOGIC_VERSION}"
+        # endpoint_url is included too — the benchmark mode can send the
+        # exact same prompt text to two different endpoints (raw Sonnet vs.
+        # the production KA) on purpose, to isolate the endpoint as the only
+        # variable; without this, the second arm would wrongly reuse the
+        # first arm's cached response since the rest of the key is identical.
+        raw = f"{system_prompt}:::{inp.text}:::{inp.time_saved_minutes}:::{_LOGIC_VERSION}:::{endpoint_url}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _save_cache(self) -> None:
@@ -196,6 +201,14 @@ class WorkflowEvaluator:
         """
         if use_responses_api:
             payload_key, messages = "input", [{"role": "user", "content": system_prompt}]
+        elif not user_message:
+            # Benchmark mode: mirror the KA endpoint's own structure (the
+            # entire resolved prompt as one user-role message) but through
+            # the classic chat-completions format, so a raw model endpoint
+            # gets an identical message shape to what the KA receives —
+            # isolating the endpoint/knowledge-access as the only variable,
+            # not also the system/user role split.
+            payload_key, messages = "messages", [{"role": "user", "content": system_prompt}]
         else:
             payload_key = "messages"
             messages = [
@@ -262,7 +275,8 @@ class WorkflowEvaluator:
         return content.strip()
 
     async def _run_conversation(
-        self, client: httpx.AsyncClient, system_prompt: str, inp: SyntheticInput
+        self, client: httpx.AsyncClient, system_prompt: str, inp: SyntheticInput,
+        endpoint_url: Optional[str] = None, use_responses_api: bool = True,
     ) -> Tuple[str, List[dict]]:
         """
         Runs the KA up to _MAX_TURNS times, answering clarifying questions with
@@ -276,6 +290,12 @@ class WorkflowEvaluator:
         prompt sent as one "user"-role message — not split across separate
         system/user turns.
 
+        endpoint_url/use_responses_api default to the production KA endpoint
+        (self._endpoint_url, Responses API) — override for benchmark.py to
+        run the exact same self-repair loop against a raw model endpoint
+        instead, so the two are compared on identical conversation-handling
+        logic, not two different code paths.
+
         Self-repair: more turns alone only helps CONVERGENCE (escaping a
         clarifying-question stall) — it does nothing for the CORRECTNESS of
         the JSON once produced. So once a response looks JSON-shaped, it's
@@ -285,6 +305,7 @@ class WorkflowEvaluator:
         fix it"), giving the model a targeted chance to correct itself
         instead of us silently accepting broken JSON as the end result.
         """
+        endpoint_url = endpoint_url or self._endpoint_url
         conversation = f"User: {inp.text}"
         transcript = [{"role": "user", "content": inp.text}]
 
@@ -298,8 +319,8 @@ class WorkflowEvaluator:
             # temperature=0: isolates prompt quality from sampling noise
             # during optimization — see _simulate_user_reply for the same rationale.
             response = await self._call(
-                client, self._endpoint_url, resolved, "",
-                use_responses_api=True, max_tokens=6000, temperature=0.0,
+                client, endpoint_url, resolved, "",
+                use_responses_api=use_responses_api, max_tokens=6000, temperature=0.0,
             )
             transcript.append({"role": "ka", "content": response})
             last_turn = turn == _MAX_TURNS - 1
@@ -333,18 +354,25 @@ class WorkflowEvaluator:
         self,
         system_prompt: str,
         inputs: List[SyntheticInput],
+        endpoint_url: Optional[str] = None,
+        use_responses_api: bool = True,
     ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
         """
         Run all inputs against a single system prompt concurrently, simulating
         multi-turn conversations where the KA asks clarifying questions.
         Returns [(input, final_response, transcript), …]
+
+        endpoint_url/use_responses_api default to the production KA endpoint —
+        override for benchmark.py to run the identical self-repair loop
+        against a raw model endpoint instead.
         """
+        endpoint_url = endpoint_url or self._endpoint_url
         sem = asyncio.Semaphore(_MAX_CONCURRENT)
         cache_hits = 0
 
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
             nonlocal cache_hits
-            key = self._cache_key(system_prompt, inp)
+            key = self._cache_key(system_prompt, inp, endpoint_url)
             cached = self._cache.get(key)
             if cached is not None:
                 cache_hits += 1
@@ -354,7 +382,8 @@ class WorkflowEvaluator:
                 async with httpx.AsyncClient() as client:
                     try:
                         response, transcript = await self._run_conversation(
-                            client, system_prompt, inp
+                            client, system_prompt, inp,
+                            endpoint_url=endpoint_url, use_responses_api=use_responses_api,
                         )
                     except Exception as e:
                         cause = e.last_attempt.exception() if isinstance(e, RetryError) else e

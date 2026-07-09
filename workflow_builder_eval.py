@@ -72,3 +72,17 @@ asyncio.get_event_loop().run_until_complete(run_optimization_loop(
     generate_only=(mode == "generate"),
     evaluate_only=(mode == "evaluate"),
 ))
+
+# COMMAND ----------
+
+# %sh
+# uname -m
+# mkdir -p /tmp/node22 && cd /tmp/node22
+# curl -fsSL -o node.tar.gz https://nodejs.org/dist/v22.9.0/node-v22.9.0-linux-x64.tar.gz
+# tar -xzf node.tar.gz --strip-components=1
+# ./bin/npm --version
+
+# mkdir -p /tmp/n8n_schema_check_cache
+# cp /Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop/prompt_optimizer/n8n_schema_check/check_params.js /tmp/n8n_schema_check_cache/
+# cp /Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop/prompt_optimizer/n8n_schema_check/package.json /tmp/n8n_schema_check_cache/
+# cd /tmp/n8n_schema_check_cache && /tmp/node22/bin/npm install --ignore-scripts

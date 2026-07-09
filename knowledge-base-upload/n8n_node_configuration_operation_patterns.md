@@ -321,18 +321,20 @@ Popular for email automation
 {
   "resource": "message",
   "operation": "send",
-  "to": "user@example.com",
+  "sendTo": "user@example.com",
   "subject": "Hello from n8n",
   "message": "This is the email body"
 }
 ```
+
+**Gotcha**: the recipient field is `sendTo`, not `to` — `to` doesn't exist anywhere in this node's schema.
 
 **With dynamic content**:
 ```javascript
 {
   "resource": "message",
   "operation": "send",
-  "to": "={{$json.email}}",
+  "sendTo": "={{$json.email}}",
   "subject": "Order Confirmation #{{$json.orderId}}",
   "message": "Dear {{$json.name}},\n\nYour order has been confirmed.\n\nThank you!",
   "options": {
@@ -747,69 +749,60 @@ JavaScript execution - 42% of workflows
 
 Conditional logic - 38% of workflows
 
+**Gotcha**: the `conditions.boolean`/`.string`/`.number` + `value1`/`operation`/`value2`/`combineOperation` structure is `typeVersion: 1` only — a legacy shape, not what a newly-built workflow should use. Current versions (`typeVersion: 2` and up) use a single `type: "filter"` `conditions` field shaped completely differently: one flat `conditions` array (not split by data type) plus `options` and `combinator`, shown below. Verified directly against n8n-workflow's `FilterValue`/`FilterConditionValue`/`FilterOperatorValue` types and the actual condition-execution logic (`executeFilterCondition`) rather than assumed — the operator strings in particular (`empty`, not `isEmpty`; `gt`/`lt`/`gte`/`lte`, not `larger`/`smaller`) differ from the legacy version's.
+
 #### String Comparison
 
-**Equals** (binary):
+**Equals**:
 ```javascript
 {
   "conditions": {
-    "string": [
-      {
-        "value1": "={{$json.status}}",
-        "operation": "equals",
-        "value2": "active"
-      }
-    ]
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.status }}", "rightValue": "active", "operator": { "type": "string", "operation": "equals" } }
+    ],
+    "combinator": "and"
   }
 }
 ```
 
-**Contains** (binary):
+**Contains**:
 ```javascript
 {
   "conditions": {
-    "string": [
-      {
-        "value1": "={{$json.email}}",
-        "operation": "contains",
-        "value2": "@example.com"
-      }
-    ]
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.email }}", "rightValue": "@example.com", "operator": { "type": "string", "operation": "contains" } }
+    ],
+    "combinator": "and"
   }
 }
 ```
 
-**isEmpty** (unary):
+**Empty** (unary — no `rightValue` needed; the operation is `empty`, not `isEmpty`):
 ```javascript
 {
   "conditions": {
-    "string": [
-      {
-        "value1": "={{$json.email}}",
-        "operation": "isEmpty"
-        // No value2 - unary operator
-        // singleValue: true added by auto-sanitization
-      }
-    ]
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.email }}", "operator": { "type": "string", "operation": "empty", "singleValue": true } }
+    ],
+    "combinator": "and"
   }
 }
 ```
-
-**Gotcha**: Unary operators (isEmpty, isNotEmpty) don't need value2!
 
 #### Number Comparison
 
-**Greater than**:
+**Greater than** (operation is `gt`, not `larger`):
 ```javascript
 {
   "conditions": {
-    "number": [
-      {
-        "value1": "={{$json.age}}",
-        "operation": "larger",
-        "value2": 18
-      }
-    ]
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.age }}", "rightValue": 18, "operator": { "type": "number", "operation": "gt" } }
+    ],
+    "combinator": "and"
   }
 }
 ```
@@ -820,62 +813,44 @@ Conditional logic - 38% of workflows
 ```javascript
 {
   "conditions": {
-    "boolean": [
-      {
-        "value1": "={{$json.isActive}}",
-        "operation": "true"
-        // Unary - no value2
-      }
-    ]
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.isActive }}", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+    ],
+    "combinator": "and"
   }
 }
 ```
 
 #### Multiple Conditions (AND)
 
-**All must match**:
+**All must match** — every condition lives in the same flat `conditions` array regardless of data type, `combinator` stays `"and"`:
 ```javascript
 {
   "conditions": {
-    "string": [
-      {
-        "value1": "={{$json.status}}",
-        "operation": "equals",
-        "value2": "active"
-      }
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.status }}", "rightValue": "active", "operator": { "type": "string", "operation": "equals" } },
+      { "id": "2", "leftValue": "={{ $json.age }}", "rightValue": 18, "operator": { "type": "number", "operation": "gt" } }
     ],
-    "number": [
-      {
-        "value1": "={{$json.age}}",
-        "operation": "larger",
-        "value2": 18
-      }
-    ]
-  },
-  "combineOperation": "all"  // AND logic
+    "combinator": "and"
+  }
 }
 ```
 
 #### Multiple Conditions (OR)
 
-**Any can match**:
+**Any can match** — same shape, `combinator: "or"`:
 ```javascript
 {
   "conditions": {
-    "string": [
-      {
-        "value1": "={{$json.status}}",
-        "operation": "equals",
-        "value2": "active"
-      },
-      {
-        "value1": "={{$json.status}}",
-        "operation": "equals",
-        "value2": "pending"
-      }
-    ]
-  },
-  "combineOperation": "any"  // OR logic
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.status }}", "rightValue": "active", "operator": { "type": "string", "operation": "equals" } },
+      { "id": "2", "leftValue": "={{ $json.status }}", "rightValue": "pending", "operator": { "type": "string", "operation": "equals" } }
+    ],
+    "combinator": "or"
+  }
 }
 ```
 
@@ -887,37 +862,39 @@ Multi-way routing - 18% of workflows
 
 #### Basic Switch
 
-**Minimal**:
+**Minimal**: like the IF node, current versions (`typeVersion: 3`+) use `type: "filter"` conditions, not `value1`/`value2`. The rules array is `rules.values` (not `rules.rules`), and `fallbackOutput` lives inside `options`, not at the top level.
 ```javascript
 {
   "mode": "rules",
   "rules": {
-    "rules": [
+    "values": [
       {
         "conditions": {
-          "string": [
-            {
-              "value1": "={{$json.status}}",
-              "operation": "equals",
-              "value2": "active"
-            }
-          ]
-        }
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.status }}", "rightValue": "active", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "renameOutput": true,
+        "outputKey": "Active"
       },
       {
         "conditions": {
-          "string": [
-            {
-              "value1": "={{$json.status}}",
-              "operation": "equals",
-              "value2": "pending"
-            }
-          ]
-        }
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.status }}", "rightValue": "pending", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "renameOutput": true,
+        "outputKey": "Pending"
       }
     ]
   },
-  "fallbackOutput": "extra"  // Catch-all for non-matching
+  "options": {
+    "fallbackOutput": "extra"  // Catch-all for non-matching — nested in "options", not top-level
+  }
 }
 ```
 
@@ -1020,34 +997,25 @@ Time-based workflows - 28% have schedule triggers
   "rule": {
     "interval": [
       {
-        "field": "hours",
-        "hoursInterval": 24
+        "field": "days",
+        "daysInterval": 1,
+        "triggerAtHour": 9,
+        "triggerAtMinute": 0
       }
-    ],
-    "hour": 9,
-    "minute": 0,
-    "timezone": "America/New_York"
+    ]
   }
 }
 ```
 
-**Gotcha**: Always set timezone explicitly!
+**Gotcha**: There is no `timezone`, `hour`, or `minute` field on the rule itself — `triggerAtHour`/`triggerAtMinute` live *inside* the interval item (and only apply when `field` is `days`, `weeks`, or `months`; `hours`/`minutes`/`seconds` intervals don't have a specific time of day, they just repeat). Timezone is a **workflow-level** setting (top-level `settings.timezone`, a sibling of `settings.executionOrder`), not anything inside `rule` at all — see [Schedule Trigger in NODE_FAMILY_GOTCHAS.md](NODE_FAMILY_GOTCHAS.md#schedule-trigger) for why that matters (DST, restarts).
 
 ```javascript
-// ❌ Bad - uses server timezone
-{
-  "rule": {
-    "interval": [...]
-  }
-}
+// ❌ Bad - timezone/hour/minute don't exist on rule at all
+{ "rule": { "interval": [{ "field": "hours", "hoursInterval": 24 }], "hour": 9, "minute": 0, "timezone": "America/New_York" } }
 
-// ✅ Good - explicit timezone
-{
-  "rule": {
-    "interval": [...],
-    "timezone": "America/New_York"
-  }
-}
+// ✅ Good - triggerAtHour/triggerAtMinute nested in the interval item; timezone set at the workflow level
+{ "rule": { "interval": [{ "field": "days", "daysInterval": 1, "triggerAtHour": 9, "triggerAtMinute": 0 }] } }
+// and, elsewhere in the same workflow JSON: "settings": { "executionOrder": "v1", "timezone": "America/New_York" }
 ```
 
 #### Every N Minutes
@@ -1068,14 +1036,20 @@ Time-based workflows - 28% have schedule triggers
 
 #### Cron Expression
 
-**Advanced scheduling**:
+**Advanced scheduling** — cron is one more `field` option on the same interval item, not a separate top-level mode:
 ```javascript
 {
-  "mode": "cron",
-  "cronExpression": "0 */2 * * *",  // Every 2 hours
-  "timezone": "America/New_York"
+  "rule": {
+    "interval": [
+      {
+        "field": "cronExpression",
+        "expression": "0 */2 * * *"
+      }
+    ]
+  }
 }
 ```
+**Gotcha**: There is no top-level `mode`/`cronExpression` pair — the expression lives at `rule.interval[].expression`, alongside `field: "cronExpression"`, exactly like every other interval type.
 
 ---
 
@@ -1087,13 +1061,13 @@ Time-based workflows - 28% have schedule triggers
 |---|---|---|
 | HTTP/API | GET, POST JSON | Remember sendBody: true |
 | Webhooks | POST receiver | Data under $json.body |
-| Communication | Slack post | channelId resourceLocator, never a plain `channel` string |
+| Communication | Slack post, Gmail send | `channelId` resourceLocator not `channel`; `sendTo` not `to` |
 | Database | SELECT with params | Use parameterized queries |
 | Transform | Set assignments | Correct type per field |
-| Conditional | IF string equals | Unary vs binary operators |
+| Conditional | IF string equals | typeVersion 2+ uses `type: "filter"`, not the legacy `value1`/`value2`/`combineOperation` shape |
 | AI | OpenAI chat | System + user messages |
 | Trigger | Jira Trigger | Scope via JQL in `filter`, no dedicated project/label field |
-| Schedule | Daily at time | Set timezone explicitly |
+| Schedule | Daily at time | No per-rule `timezone`/`hour`/`minute` — timezone is workflow-level `settings.timezone`; time-of-day is `triggerAtHour`/`triggerAtMinute` nested in the interval |
 
 **Configuration Approach**:
 1. Use patterns as starting point
@@ -1266,33 +1240,30 @@ Concrete minimal configs showing how required fields differ by resource + operat
 
 ### IF Node Examples
 
-#### String Comparison (Binary)
+Current versions (`typeVersion: 2`+) use `type: "filter"` — see the full IF section above for the structure and the real operator strings (`empty`, not `isEmpty`; `gt`/`lt`/`gte`/`lte`, not `larger`/`smaller`). `value1`/`value2`/`combineOperation` below is legacy `typeVersion: 1` syntax only.
+
+#### String Comparison
 ```javascript
 {
   "conditions": {
-    "string": [
-      {
-        "value1": "={{$json.status}}",
-        "operation": "equals",
-        "value2": "active"              // Binary: needs value2
-      }
-    ]
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.status }}", "rightValue": "active", "operator": { "type": "string", "operation": "equals" } }
+    ],
+    "combinator": "and"
   }
 }
 ```
 
-#### Empty Check (Unary)
+#### Empty Check (unary — no `rightValue`)
 ```javascript
 {
   "conditions": {
-    "string": [
-      {
-        "value1": "={{$json.email}}",
-        "operation": "isEmpty",
-        // No value2 - unary operator
-        "singleValue": true             // Auto-added by sanitization
-      }
-    ]
+    "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+    "conditions": [
+      { "id": "1", "leftValue": "={{ $json.email }}", "operator": { "type": "string", "operation": "empty", "singleValue": true } }
+    ],
+    "combinator": "and"
   }
 }
 ```

@@ -57,81 +57,53 @@ Schedule Trigger → [Fetch Data] → [Process] → [Deliver] → [Log/Notify]
 
 ## Schedule Configuration
 
+The Schedule Trigger has exactly two top-level parameters: `rule` (a fixedCollection holding an `interval` array) and `notice`. There is no separate top-level `mode`/`interval`/`unit`/`days`/`hour`/`minute`/`expression` — every variant below is really just a different value of `rule.interval[].field`, with a few extra fields nested inside that same interval item depending on which `field` is chosen.
+
 ### Interval Mode
 **Best for**: Simple recurring tasks
 
 **Examples**:
 ```javascript
 // Every 15 minutes
-{
-  mode: "interval",
-  interval: 15,
-  unit: "minutes"
-}
+{ "rule": { "interval": [{ "field": "minutes", "minutesInterval": 15 }] } }
 
 // Every 2 hours
-{
-  mode: "interval",
-  interval: 2,
-  unit: "hours"
-}
+{ "rule": { "interval": [{ "field": "hours", "hoursInterval": 2 }] } }
 
-// Every day at midnight
-{
-  mode: "interval",
-  interval: 1,
-  unit: "days"
-}
+// Every day (any time of day — see Days & Hours Mode below to pin a specific time)
+{ "rule": { "interval": [{ "field": "days", "daysInterval": 1 }] } }
 ```
 
 ### Days & Hours Mode
-**Best for**: Specific days and times
+**Best for**: Specific days and times — still `field: "days"` or `field: "weeks"`, just with `triggerAtHour`/`triggerAtMinute` (and, for weekly, `triggerAtDay`) also set on that same interval item.
 
 **Examples**:
 ```javascript
-// Weekdays at 9 AM
-{
-  mode: "daysAndHours",
-  days: ["monday", "tuesday", "wednesday", "thursday", "friday"],
-  hour: 9,
-  minute: 0
-}
+// Every day at 9 AM
+{ "rule": { "interval": [{ "field": "days", "daysInterval": 1, "triggerAtHour": 9, "triggerAtMinute": 0 }] } }
 
-// Every Monday at 6 PM
-{
-  mode: "daysAndHours",
-  days: ["monday"],
-  hour: 18,
-  minute: 0
-}
+// Every Monday at 6 PM — triggerAtDay is numeric (0=Sunday..6=Saturday) and always an array
+{ "rule": { "interval": [{ "field": "weeks", "weeksInterval": 1, "triggerAtDay": [1], "triggerAtHour": 18, "triggerAtMinute": 0 }] } }
 ```
+**Gotcha**: there's no built-in "list of weekday names" filter for an arbitrary subset like "weekdays only" — for that, use Cron Mode below instead.
 
 ### Timezone Gotcha (applies to all modes)
 
-`triggerAtHour` / `hour` values use the **instance timezone, not UTC**. n8n resolves it from the `GENERIC_TIMEZONE` env var (or the workflow's timezone setting); when neither is set, it falls back to the host system timezone. A trigger set to hour 21 on a server in `America/Edmonton` fires at 9 PM MST, not 21:00 UTC. Always confirm the instance timezone before scheduling, or set the workflow timezone explicitly.
+There is no `timezone` field anywhere inside `rule` — it's a **workflow-level** setting (top-level `settings.timezone`, a sibling of `settings.executionOrder`), resolved from that, or the `GENERIC_TIMEZONE` env var, or the host system clock if neither is set. A trigger set to `triggerAtHour: 21` on a server in `America/Edmonton` fires at 9 PM MST, not 21:00 UTC. Always confirm the instance timezone before scheduling, or set the workflow's `settings.timezone` explicitly.
 
 ### Cron Mode (Advanced)
-**Best for**: Complex schedules
+**Best for**: Complex schedules — `field: "cronExpression"` with an `expression` string, still nested in the same `rule.interval` array, not a separate top-level mode.
 
 **Examples**:
 ```javascript
 // Every weekday at 9 AM
-{
-  mode: "cron",
-  expression: "0 9 * * 1-5"
-}
+{ "rule": { "interval": [{ "field": "cronExpression", "expression": "0 9 * * 1-5" }] } }
 
 // First day of every month at midnight
-{
-  mode: "cron",
-  expression: "0 0 1 * *"
-}
+{ "rule": { "interval": [{ "field": "cronExpression", "expression": "0 0 1 * *" }] } }
 
 // Every 15 minutes during business hours (9 AM - 5 PM) on weekdays
-{
-  mode: "cron",
-  expression: "*/15 9-17 * * 1-5"
-}
+{ "rule": { "interval": [{ "field": "cronExpression", "expression": "*/15 9-17 * * 1-5" }] } }
 ```
 
 **Cron format**: `minute hour day month weekday`
@@ -352,9 +324,11 @@ Schedule Trigger → [Fetch Data] → [Process] → [Deliver] → [Log/Notify]
 
 ### Set Workflow Timezone
 ```javascript
-// In workflow settings
-{
-  timezone: "America/New_York"  // EST/EDT
+// Top-level "settings" object, a sibling of "executionOrder" — not
+// anything inside the Schedule Trigger node's own parameters
+"settings": {
+  "executionOrder": "v1",
+  "timezone": "America/New_York"  // EST/EDT
 }
 ```
 
@@ -378,14 +352,12 @@ UTC                 - Universal Time
 // ❌ Bad: UTC schedule for "9 AM local"
 // Will be off by 1 hour during DST transitions
 
-// ✅ Good: Set workflow timezone
-{
-  timezone: "America/New_York",
-  schedule: {
-    mode: "daysAndHours",
-    hour: 9  // Always 9 AM Eastern, regardless of DST
-  }
-}
+// ✅ Good: workflow-level timezone (settings.timezone) + the Schedule
+// Trigger's own triggerAtHour/triggerAtMinute — two separate places in
+// the same workflow JSON, not one combined object
+// top-level: "settings": { "executionOrder": "v1", "timezone": "America/New_York" }
+// Schedule Trigger node: { "rule": { "interval": [{ "field": "days", "daysInterval": 1, "triggerAtHour": 9, "triggerAtMinute": 0 }] } }
+// → always 9 AM Eastern, regardless of DST
 ```
 
 ---
@@ -564,18 +536,10 @@ Schedule → Set (dryRun: true)
 ### 4. Shorter Interval for Testing
 ```javascript
 // Testing: every 1 minute
-{
-  mode: "interval",
-  interval: 1,
-  unit: "minutes"
-}
+{ "rule": { "interval": [{ "field": "minutes", "minutesInterval": 1 }] } }
 
 // Production: every 1 hour
-{
-  mode: "interval",
-  interval: 1,
-  unit: "hours"
-}
+{ "rule": { "interval": [{ "field": "hours", "hoursInterval": 1 }] } }
 ```
 
 ---

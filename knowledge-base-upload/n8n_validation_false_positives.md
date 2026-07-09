@@ -432,7 +432,9 @@ Many warnings are context-dependent:
   }
 }
 
-// GOOD: Add validation
+// GOOD: Add validation — current typeVersion (2+) uses type: "filter"
+// conditions, not value1/value2/boolean; both checks are "string" type
+// operations (regex matching also validates non-empty), combined with "and"
 {
   "nodes": [
     {
@@ -442,19 +444,24 @@ Many warnings are context-dependent:
     {
       "name": "Validate Input",
       "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
       "parameters": {
         "conditions": {
-          "boolean": [
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
             {
-              "value1": "={{$json.body.email}}",
-              "operation": "isNotEmpty"
+              "id": "1",
+              "leftValue": "={{ $json.body.email }}",
+              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
             },
             {
-              "value1": "={{$json.body.email}}",
-              "operation": "regex",
-              "value2": "^[^@]+@[^@]+\\.[^@]+$"
+              "id": "2",
+              "leftValue": "={{ $json.body.email }}",
+              "rightValue": "^[^@]+@[^@]+\\.[^@]+$",
+              "operator": { "type": "string", "operation": "regex" }
             }
-          ]
+          ],
+          "combinator": "and"
         }
       }
     }

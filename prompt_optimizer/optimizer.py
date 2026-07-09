@@ -52,7 +52,13 @@ _IMPROVEMENT_SYSTEM = """\
 You are a prompt engineer. Rewrite the given system prompt for an AI workflow builder assistant \
 that helps non-technical Slack users build n8n automation workflows.
 
-Apply the requested changes precisely. Keep the improved prompt focused, clear, and complete.
+Apply the requested changes precisely. This is a genuine rewrite, not an append: you are \
+EXPECTED to remove, merge, or rephrase existing sentences whenever a requested change makes \
+them redundant, contradictory, or unnecessary — don't just tack new instructions onto the end \
+while leaving everything else untouched. Prefer tightening an existing rule over stating the \
+same idea twice in different words. Keep the improved prompt focused, clear, and complete; a \
+prompt that keeps growing every iteration without ever being consolidated is a failure of this \
+task, not a safe default.
 Do NOT add markdown formatting, headers, or bullet points to the prompt itself — write it as \
 flowing instructions. Return ONLY the improved prompt text, nothing else.
 """

@@ -116,6 +116,9 @@ synthetic_data:
 
 optimizer:
   score_threshold: 0.85
+  # Convergence requires BOTH this AND score_threshold — the judge score
+  # alone can't see whether the output is actually valid n8n JSON.
+  structural_validity_threshold: 0.8
   max_iterations: 10
   candidates_per_iteration: 3
   worst_examples_k: 6        # Bottom-K fed to Haiku for failure analysis

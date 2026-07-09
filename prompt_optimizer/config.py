@@ -58,6 +58,12 @@ class OptimizerConfig:
     max_iterations: int
     candidates_per_iteration: int
     worst_examples_k: int = 5
+    # Convergence requires BOTH this AND score_threshold — a prompt that
+    # scores well on the judge's subjective dimensions but still produces
+    # mostly-broken n8n JSON isn't actually done. Without this, the loop
+    # could (and did) declare "no changes needed" at a 0.92 judge score
+    # while only 23% of generated workflows were structurally valid.
+    structural_validity_threshold: float = 0.8
 
 
 @dataclass
@@ -122,6 +128,7 @@ def load_config(path: str = "config.yaml") -> Config:
         max_iterations=opt["max_iterations"],
         candidates_per_iteration=opt["candidates_per_iteration"],
         worst_examples_k=opt.get("worst_examples_k", 5),
+        structural_validity_threshold=opt.get("structural_validity_threshold", 0.8),
     )
 
     judge = JudgeConfig(

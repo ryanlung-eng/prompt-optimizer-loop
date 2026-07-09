@@ -24,6 +24,10 @@ def _prompt_hash(text: str) -> str:
     return hashlib.sha1(text.encode()).hexdigest()[:7]
 
 
+def _structural_validity_rate(results: List[EvalResult]) -> float:
+    return sum(1 for r in results if r.structural.valid) / max(len(results), 1)
+
+
 def _print_score_table(
     node_name: str, iteration: int, results: List[EvalResult], dim_names: List[str]
 ) -> float:
@@ -61,7 +65,7 @@ def _print_score_table(
     # while still broken." ever_attempted_json scans the whole transcript to
     # keep "never tried" distinct from "tried and failed even with feedback."
     n = len(results)
-    structurally_valid = sum(1 for r in results if r.structural.valid)
+    structurally_valid = round(_structural_validity_rate(results) * n)
     attempted_not_valid = sum(1 for r in results if r.ever_attempted_json and not r.structural.valid)
     never_attempted = n - structurally_valid - attempted_not_valid
     table.add_row("[dim]Never produced JSON[/dim]", f"[dim]{never_attempted}/{n}[/dim]", "")
@@ -139,10 +143,10 @@ async def _optimize_node(
     optimizer: PromptOptimizer,
     tracker: PromptTracker,
     config: Config,
-) -> tuple[str, float]:
+) -> tuple[str, float, float]:
     """
     Run one optimization cycle for a single node.
-    Returns (best_prompt, best_score).
+    Returns (best_prompt, best_score, best_structural_rate).
     """
     dim_names = [d.name for d in config.judge.dimensions]
 
@@ -150,6 +154,7 @@ async def _optimize_node(
     console.rule(f"[dim]Evaluating current prompt for '{node_name}'[/dim]")
     current_results = await _evaluate_prompt(evaluator, judge, current_prompt, inputs)
     current_score = _print_score_table(node_name, iteration, current_results, dim_names)
+    current_structural_rate = _structural_validity_rate(current_results)
 
     with tracker.start_iteration(
         iteration=iteration,
@@ -162,21 +167,36 @@ async def _optimize_node(
 
     _print_gap_report(current_results)
 
-    if current_score >= config.optimizer.score_threshold:
-        console.print(f"  [green]Score {current_score:.3f} ≥ threshold {config.optimizer.score_threshold}. No changes needed.[/green]")
-        return current_prompt, current_score
+    # Both must clear their bar — a prompt that scores well on the judge's
+    # subjective dimensions but still produces mostly-broken n8n JSON isn't
+    # actually done. Judge score alone can't see structural validity at all.
+    score_ok = current_score >= config.optimizer.score_threshold
+    structural_ok = current_structural_rate >= config.optimizer.structural_validity_threshold
+    if score_ok and structural_ok:
+        console.print(f"  [green]Score {current_score:.3f} ≥ threshold {config.optimizer.score_threshold} "
+                       f"and structural validity {current_structural_rate:.0%} ≥ "
+                       f"{config.optimizer.structural_validity_threshold:.0%}. No changes needed.[/green]")
+        return current_prompt, current_score, current_structural_rate
 
     # --- Generate candidate prompts ---
-    console.print(f"\n  [yellow]Score below threshold ({current_score:.3f}). Generating {config.optimizer.candidates_per_iteration} improved candidates…[/yellow]")
+    reasons = []
+    if not score_ok:
+        reasons.append(f"score {current_score:.3f} < {config.optimizer.score_threshold}")
+    if not structural_ok:
+        reasons.append(f"structural validity {current_structural_rate:.0%} < "
+                        f"{config.optimizer.structural_validity_threshold:.0%}")
+    console.print(f"\n  [yellow]Not converged ({'; '.join(reasons)}). "
+                   f"Generating {config.optimizer.candidates_per_iteration} improved candidates…[/yellow]")
     candidates = await optimizer.generate_candidates(node_name, current_prompt, current_results)
 
     if not candidates:
         console.print("  [red]No candidates generated. Keeping current prompt.[/red]")
-        return current_prompt, current_score
+        return current_prompt, current_score, current_structural_rate
 
     # --- Evaluate each candidate ---
     best_prompt = current_prompt
     best_score = current_score
+    best_structural_rate = current_structural_rate
 
     for i, candidate in enumerate(candidates):
         version_tag = f"v{iteration}_candidate{i}_{_prompt_hash(candidate)}"
@@ -186,6 +206,7 @@ async def _optimize_node(
         candidate_score = _print_score_table(
             node_name, iteration, candidate_results, dim_names
         )
+        candidate_structural_rate = _structural_validity_rate(candidate_results)
 
         with tracker.start_iteration(
             iteration=iteration,
@@ -198,6 +219,7 @@ async def _optimize_node(
 
         if candidate_score > best_score:
             best_score = candidate_score
+            best_structural_rate = candidate_structural_rate
             best_prompt = candidate
             console.print(f"  [green]↑ New best: {best_score:.3f}[/green]")
 
@@ -207,7 +229,7 @@ async def _optimize_node(
     else:
         console.print(f"\n  [yellow]No candidate beat the current prompt. Keeping as-is.[/yellow]")
 
-    return best_prompt, best_score
+    return best_prompt, best_score, best_structural_rate
 
 
 async def run_optimization_loop(
@@ -267,7 +289,7 @@ async def run_optimization_loop(
         updated_prompts: Dict[str, str] = {}
 
         for node_name, prompt in best_prompts.items():
-            best_prompt, best_score = await _optimize_node(
+            best_prompt, best_score, best_structural_rate = await _optimize_node(
                 node_name=node_name,
                 current_prompt=prompt,
                 iteration=iteration,
@@ -280,7 +302,8 @@ async def run_optimization_loop(
             )
             updated_prompts[node_name] = best_prompt
 
-            if best_score < config.optimizer.score_threshold:
+            if (best_score < config.optimizer.score_threshold
+                    or best_structural_rate < config.optimizer.structural_validity_threshold):
                 all_converged = False
 
         best_prompts = updated_prompts

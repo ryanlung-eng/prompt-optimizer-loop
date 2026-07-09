@@ -287,12 +287,13 @@ Popular choice for AI agent workflows
 {
   "resource": "message",
   "operation": "update",
-  "messageId": "1234567890.123456",  // From previous message post
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },
+  "ts": "1234567890.123456",  // From previous message post — NOT "messageId", that field doesn't exist
   "text": "Updated message content"
 }
 ```
 
-**Note**: `messageId` required, `channelId` optional (can be inferred) — same resourceLocator shape as Post Message if provided.
+**Gotcha**: there is no `messageId` field anywhere in this node. The message identifier field is `ts` for `update`, but `timestamp` for `delete`/`get`/`getPermalink` — an inconsistency in n8n itself, not a typo. `channelId` is required for update too (not optional — Slack's API needs both channel and timestamp to locate a message).
 
 #### Create Channel
 
@@ -1183,9 +1184,9 @@ Concrete minimal configs showing how required fields differ by resource + operat
 {
   "resource": "message",
   "operation": "update",
-  "messageId": "1234567890",  // Required (different from post!)
+  "ts": "1234567890.123456",  // Required — NOT "messageId", that field doesn't exist
   "text": "Updated!",         // Required
-  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" }  // Optional (can be inferred)
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" }  // Also required (not optional)
 }
 ```
 

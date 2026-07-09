@@ -151,7 +151,7 @@ Deep dive into n8n property dependencies and displayOptions mechanism.
 ```javascript
 // Operation: post
 {
-  "name": "channel",
+  "name": "channelId",
   "displayOptions": {
     "show": {
       "resource": ["message"],
@@ -162,7 +162,7 @@ Deep dive into n8n property dependencies and displayOptions mechanism.
 
 // Operation: update
 {
-  "name": "messageId",
+  "name": "ts",  // NOT "messageId" — that field doesn't exist anywhere on this node
   "displayOptions": {
     "show": {
       "resource": ["message"],
@@ -174,31 +174,28 @@ Deep dive into n8n property dependencies and displayOptions mechanism.
 
 **Flow**:
 1. User selects resource="message"
-2. User selects operation="post" → sees channel
-3. User changes to operation="update" → channel hides, messageId shows
+2. User selects operation="post" → sees channelId
+3. User changes to operation="update" → still shows channelId (required for update too), plus ts
 
 ### Pattern 3: Type-Specific Configuration
 
-**Use case**: Different types need different fields
+**Use case**: Different values of one field show different follow-up fields
 
-**Example**: IF node conditions
+**Example**: Schedule Trigger's `rule.interval[].field`
 ```javascript
-// String operations
+// field: "days" shows a specific time of day
 {
-  "name": "value2",
+  "name": "triggerAtHour",
   "displayOptions": {
-    "show": {
-      "conditions.string.0.operation": ["equals", "notEquals", "contains"]
-    }
+    "show": { "field": ["days", "weeks", "months"] }
   }
 }
 
-// Unary operations (isEmpty) don't show value2
+// field: "minutes"/"hours" instead show their own interval-count field, not a time of day
 {
+  "name": "minutesInterval",
   "displayOptions": {
-    "hide": {
-      "conditions.string.0.operation": ["isEmpty", "isNotEmpty"]
-    }
+    "show": { "field": ["minutes"] }
   }
 }
 ```
@@ -334,74 +331,63 @@ method=POST
 
 ### Example 2: IF Node Operator Dependencies
 
-**Scenario**: String comparison with different operators
+**Scenario**: String comparison with different operators. This is `typeVersion: 2`+ (`type: "filter"`) syntax — `leftValue`/`rightValue`/`operator`, not the legacy `value1`/`value2`. Operator strings are also real ones (`empty`, not `isEmpty`), verified against `executeFilterCondition`.
 
 **Binary operator** (equals):
 ```javascript
 {
-  "conditions": {
-    "string": [
-      {
-        "operation": "equals"
-        // → value1 required
-        // → value2 required
-        // → singleValue should NOT be set
-      }
-    ]
-  }
+  "leftValue": "={{ $json.status }}",
+  "rightValue": "active",
+  "operator": { "type": "string", "operation": "equals" }
+  // → rightValue required
+  // → singleValue should NOT be set
 }
 ```
 
-**Unary operator** (isEmpty):
+**Unary operator** (empty):
 ```javascript
 {
-  "conditions": {
-    "string": [
-      {
-        "operation": "isEmpty"
-        // → value1 required
-        // → value2 should NOT be set
-        // → singleValue should be true (auto-added)
-      }
-    ]
-  }
+  "leftValue": "={{ $json.status }}",
+  "operator": { "type": "string", "operation": "empty", "singleValue": true }
+  // → rightValue should NOT be set
+  // → singleValue should be true
 }
 ```
 
 **Dependency table**:
 
-| Operator | value1 | value2 | singleValue |
+| Operator | leftValue | rightValue | singleValue |
 |---|---|---|---|
 | equals | Required | Required | false |
 | notEquals | Required | Required | false |
 | contains | Required | Required | false |
-| isEmpty | Required | Hidden | true |
-| isNotEmpty | Required | Hidden | true |
+| empty | Required | Hidden | true |
+| notEmpty | Required | Hidden | true |
 
 ### Example 3: Slack Operation Matrix
 
-**Scenario**: Different Slack operations show different fields
+**Scenario**: Different Slack operations show different fields. The channel field is `channelId` (a resourceLocator) on every operation — there is no plain `channel` string field anywhere in the current node.
 
 ```javascript
 // post message
 {
   "resource": "message",
   "operation": "post"
-  // Shows: channel (required), text (required), attachments, blocks
+  // Shows: channelId (required), text (required), attachments, blocks
 }
 
 // update message
 {
   "resource": "message",
   "operation": "update"
-  // Shows: messageId (required), text (required), channel (optional)
+  // Shows: channelId (required), ts (required), text (required)
 }
 
 // delete message
 {
   "resource": "message",
   "operation": "delete"
-  // Shows: messageId (required), channel (required)
+  // Shows: channelId (required), timestamp (required)
   // Hides: text, attachments, blocks
 }
 
@@ -409,18 +395,18 @@ method=POST
 {
   "resource": "message",
   "operation": "get"
-  // Shows: messageId (required), channel (required)
+  // Shows: channelId (required), timestamp (required)
   // Hides: text, attachments, blocks
 }
 ```
 
-**Field visibility matrix**:
+**Field visibility matrix** — note the message-identifier field name itself changes per operation (`ts` for update, `timestamp` for delete/get — an inconsistency in n8n itself; there is no `messageId` field anywhere):
 
 | Field | post | update | delete | get |
 |---|---|---|---|---|
-| channel | Required | Optional | Required | Required |
+| channelId | Required | Required | Required | Required |
 | text | Required | Required | Hidden | Hidden |
-| messageId | Hidden | Required | Required | Required |
+| ts / timestamp | Hidden | `ts` Required | `timestamp` Required | `timestamp` Required |
 | attachments | Optional | Optional | Hidden | Hidden |
 | blocks | Optional | Optional | Hidden | Hidden |
 
@@ -490,19 +476,19 @@ method=POST
 
 **Operator structure issues** (IF/Switch nodes):
 
-**Example**: singleValue property
+**Example**: singleValue property (operator name is `empty`, not `isEmpty`)
 ```javascript
 // You configure (missing singleValue)
 {
   "type": "boolean",
-  "operation": "isEmpty"
+  "operation": "empty"
   // Missing singleValue
 }
 
 // Auto-sanitization adds it
 {
   "type": "boolean",
-  "operation": "isEmpty",
+  "operation": "empty",
   "singleValue": true  // ✅ Added automatically
 }
 ```
@@ -511,12 +497,12 @@ method=POST
 
 **Missing required fields**:
 ```javascript
-// You configure (missing channel)
+// You configure (missing channelId)
 {
   "resource": "message",
   "operation": "post",
   "text": "Hello"
-  // Missing required field: channel
+  // Missing required field: channelId
 }
 
 // Auto-sanitization does NOT add
@@ -524,7 +510,7 @@ method=POST
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general",  // ← You must add
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },  // ← You must add
   "text": "Hello"
 }
 ```
@@ -572,7 +558,7 @@ get_node({
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general",
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },
   "text": "Hello"
 }
 
@@ -580,13 +566,13 @@ get_node({
 {
   "resource": "message",
   "operation": "update",  // Changed
-  "channel": "#general",  // Still here
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },  // Still here, still required
   "text": "Updated"       // Still here
-  // Missing: messageId (required for update!)
+  // Missing: ts (required for update!)
 }
 ```
 
-**Validation error**: "messageId is required"
+**Validation error**: "ts is required"
 
 **Why**: Different operation = different required fields
 
@@ -601,9 +587,9 @@ get_node({
 {
   "resource": "message",
   "operation": "update",
-  "messageId": "1234567890",  // Required for update
-  "text": "Updated",
-  "channel": "#general"       // Optional for update
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },  // Required for update too
+  "ts": "1234567890.123456",  // Required for update — NOT "messageId"
+  "text": "Updated"
 }
 ```
 
@@ -652,40 +638,30 @@ get_node({
 
 ### Pattern 1: Conditional Required with Fallback
 
-**Example**: Channel can be string OR expression
+**Example**: `channelId`'s resourceLocator `value` can be a literal string or an expression — the field itself doesn't change, just what's inside `value`.
 
 ```javascript
-// Option 1: String
-{
-  "channel": "#general"
-}
+// Option 1: Literal ID
+{ "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" } }
 
 // Option 2: Expression
-{
-  "channel": "={{$json.channelName}}"
-}
+{ "channelId": { "__rl": true, "value": "={{ $json.channelId }}", "mode": "id" } }
 
-// Validation accepts both
+// Both are accepted — the resourceLocator wrapper is the same shape either way
 ```
 
-### Pattern 2: Mutually Exclusive Fields
+### Pattern 2: Mutually Exclusive Modes on the Same Field
 
-**Example**: Use either ID or name, not both
+**Example**: a resourceLocator's `mode` picks exactly one way to identify the same resource — never combine modes.
 
 ```javascript
-// Use messageId
-{
-  "messageId": "1234567890"
-  // name not needed
-}
+// mode: "id" — value is the raw channel ID
+{ "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" } }
 
-// OR use messageName
-{
-  "messageName": "thread-name"
-  // messageId not needed
-}
+// mode: "url" — value is a Slack URL instead
+{ "channelId": { "__rl": true, "value": "https://app.slack.com/client/T.../C0123456789", "mode": "url" } }
 
-// Dependencies ensure only one is required
+// Dependencies ensure only one mode's shape is expected at a time
 ```
 
 ### Pattern 3: Progressive Complexity
@@ -834,30 +810,28 @@ A condensed introduction to the displayOptions mechanism and the three most comm
 {
   "resource": "message",
   "operation": "post"
-  // → Shows: channel, text, attachments, etc.
+  // → Shows: channelId, text, attachments, etc.
 }
 
 {
   "resource": "message",
   "operation": "update"
-  // → Shows: messageId, text (different fields!)
+  // → Shows: channelId, ts, text (ts, not messageId — that field doesn't exist)
 }
 ```
 
 #### Pattern 3: Type Selection
 
-**Example**: IF node conditions
+**Example**: IF node conditions (`type: "filter"`, `typeVersion: 2`+ — `leftValue`/`rightValue`, not `value1`/`value2`)
 ```javascript
 {
-  "type": "string",
-  "operation": "contains"
-  // → Shows: value1, value2
+  "operator": { "type": "string", "operation": "contains" }
+  // → Shows: leftValue, rightValue
 }
 
 {
-  "type": "boolean",
-  "operation": "equals"
-  // → Shows: value1, value2, different operators
+  "operator": { "type": "boolean", "operation": "equals" }
+  // → Shows: leftValue, rightValue, different operator options
 }
 ```
 
@@ -928,7 +902,7 @@ get_node({
 **Rule**:
 ```
 singleValue should be true when:
-  - operation IN (isEmpty, isNotEmpty, true, false)
+  - operation IN (empty, notEmpty, true, false)
 ```
 
 **Good news**: Auto-sanitization fixes this!

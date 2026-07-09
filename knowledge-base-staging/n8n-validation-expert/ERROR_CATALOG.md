@@ -38,10 +38,10 @@ Common validation errors by priority:
 ```json
 {
   "type": "missing_required",
-  "property": "channel",
-  "message": "Channel name is required",
+  "property": "channelId",
+  "message": "Channel is required",
   "node": "Slack",
-  "path": "parameters.channel"
+  "path": "parameters.channelId"
 }
 ```
 
@@ -50,16 +50,16 @@ Common validation errors by priority:
 {
   "resource": "message",
   "operation": "post"
-  // Missing: channel
+  // Missing: channelId
 }
 ```
 
-**Fix**:
+**Fix** — `channelId` is a resourceLocator, not a plain string; there is no `channel` field on this node:
 ```javascript
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general"  // ✅ Added required field
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" }  // ✅ Added required field
 }
 ```
 
@@ -242,15 +242,17 @@ const info = get_node({
 }
 ```
 
-#### Example 3: Invalid Channel Format
+#### Example 3: Invalid Channel ID Format
+
+There is no plain `channel` string field to have a "#lowercase-name" format rule — `channelId` is a resourceLocator, and its `mode: "id"` value has its own regex validation instead.
 
 **Error**:
 ```json
 {
   "type": "invalid_value",
-  "property": "channel",
-  "message": "Channel name must start with # and be lowercase (e.g., #general)",
-  "current": "General"
+  "property": "channelId.value",
+  "message": "Not a valid Slack Channel ID",
+  "current": "#General"
 }
 ```
 
@@ -259,7 +261,7 @@ const info = get_node({
 {
   "resource": "message",
   "operation": "post",
-  "channel": "General"  // ❌ Wrong format
+  "channelId": { "__rl": true, "value": "#General", "mode": "id" }  // ❌ mode "id" expects a raw ID like C0122KQ70S7E, not a #name
 }
 ```
 
@@ -268,7 +270,7 @@ const info = get_node({
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general"  // ✅ Correct format
+  "channelId": { "__rl": true, "value": "C0122KQ70S7E", "mode": "id" }  // ✅ Correct format for mode "id"
 }
 ```
 
@@ -353,7 +355,7 @@ const info = get_node({
 ```json
 {
   "type": "type_mismatch",
-  "property": "channel",
+  "property": "channelId.value",
   "message": "Expected string, got number",
   "expected": "string",
   "current": 12345
@@ -365,7 +367,7 @@ const info = get_node({
 {
   "resource": "message",
   "operation": "post",
-  "channel": 12345  // ❌ Number (even if channel ID)
+  "channelId": { "__rl": true, "value": 12345, "mode": "id" }  // ❌ Number
 }
 ```
 
@@ -374,7 +376,7 @@ const info = get_node({
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general"  // ✅ String (channel name, not ID)
+  "channelId": { "__rl": true, "value": "C0122KQ70S7E", "mode": "id" }  // ✅ String channel ID
 }
 ```
 
@@ -471,7 +473,7 @@ const info = get_node({
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general",
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },
   "text": "$json.name"  // ❌ Missing {{}}
 }
 ```
@@ -481,7 +483,7 @@ const info = get_node({
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#general",
+  "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },
   "text": "={{$json.name}}"  // ✅ Wrapped in {{}}
 }
 ```
@@ -695,7 +697,7 @@ n8n_update_partial_workflow({
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#alerts"
+  "channelId": { "__rl": true, "value": "C0ALERTS123", "mode": "id" }
   // No error handling ⚠️
 }
 ```
@@ -705,7 +707,7 @@ n8n_update_partial_workflow({
 {
   "resource": "message",
   "operation": "post",
-  "channel": "#alerts",
+  "channelId": { "__rl": true, "value": "C0ALERTS123", "mode": "id" },
   "continueOnFail": true,
   "retryOnFail": true,
   "maxTries": 3
@@ -834,7 +836,7 @@ SELECT * FROM users WHERE active = true LIMIT 1000
 ```javascript
 {
   "type": "boolean",
-  "operation": "isEmpty"
+  "operation": "empty"
   // Missing singleValue ❌
 }
 ```
@@ -843,7 +845,7 @@ SELECT * FROM users WHERE active = true LIMIT 1000
 ```javascript
 {
   "type": "boolean",
-  "operation": "isEmpty",
+  "operation": "empty",
   "singleValue": true  // ✅ Added automatically
 }
 ```

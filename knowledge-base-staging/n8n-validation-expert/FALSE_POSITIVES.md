@@ -62,7 +62,7 @@ Many warnings are context-dependent:
     "parameters": {
       "resource": "message",
       "operation": "post",
-      "channel": "#test"
+      "channelId": { "__rl": true, "value": "C0TEST123", "mode": "id" }
       // No error handling - OK for testing
     }
   }]
@@ -77,7 +77,7 @@ Many warnings are context-dependent:
 {
   "name": "Optional Slack Notification",
   "parameters": {
-    "channel": "#general",
+    "channelId": { "__rl": true, "value": "C0123456789", "mode": "id" },
     "text": "FYI: Process completed"
     // If this fails, no big deal
   }
@@ -629,7 +629,7 @@ When accepting a warning, document why:
     "name": "Send Slack Notification",
     "type": "n8n-nodes-base.slack",
     "parameters": {
-      "channel": "#notifications"
+      "channelId": { "__rl": true, "value": "C0NOTIFY123", "mode": "id" }
       // ACCEPTED WARNING: No error handling
       // Reason: Non-critical notification, failures are acceptable
       // Reviewed: 2025-10-20

@@ -48,6 +48,7 @@ const NODE_TYPE_MAP = {
   "n8n-nodes-base.if": ["n8n-nodes-base/dist/nodes/If/If.node.js", "If"],
   "n8n-nodes-base.noOp": ["n8n-nodes-base/dist/nodes/NoOp/NoOp.node.js", "NoOp"],
   "n8n-nodes-base.code": ["n8n-nodes-base/dist/nodes/Code/Code.node.js", "Code"],
+  "n8n-nodes-base.set": ["n8n-nodes-base/dist/nodes/Set/Set.node.js", "Set"],
 };
 
 // Protocol-level wrapper keys used by n8n's resourceLocator field shape

@@ -17,6 +17,9 @@ prompts:
     Databricks enabled, id: "DNV5Ld0Um1SCcA04"
     Jira enabled, id: "Q8l4d25oEqHPYX7H"
     Slack enabled, id: "qrX7FbQkvUaMRB0N"
+    Trello enabled, id: "K3mQ8vXpL2wR9tYs"
+    Google Docs enabled, id: "N7bH4jC1mZ8qFdWe"
+    Google Drive enabled, id: "P5tL9xM3vB7nJhKr"
 
     User ID:
     {{ $('Slack Trigger').item.json.user }}

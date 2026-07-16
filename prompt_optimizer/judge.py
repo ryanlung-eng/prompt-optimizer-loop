@@ -52,8 +52,9 @@ def _format_transcript(transcript: List[dict]) -> str:
 _JUDGE_SYSTEM_IN_DIST = """\
 You are an expert evaluator of an AI workflow builder assistant. \
 The assistant helps non-technical Ibotta employees build automation workflows \
-(using Gmail, Slack, Jira, Google Sheets, and Cron triggers; \
-with outputs of Slack messages, emails, and Sheets updates; \
+(using Gmail, Slack, Jira, Google Sheets, Trello, Google Drive, and Cron triggers; \
+with outputs of Slack messages, emails, Sheets updates, Trello cards, Google Docs \
+updates, Google Drive uploads, and Google Slides presentations; \
 with a mandatory Slack approval gate on every outbound action).
 
 You will receive: the user's original request, what a great response should do, \
@@ -197,8 +198,10 @@ You are evaluating whether an AI workflow builder correctly handles a request \
 for an UNSUPPORTED integration.
 
 Supported integrations: Gmail trigger, Slack trigger, Jira trigger, Google Sheets trigger, \
-Cron/schedule trigger; outputs: Slack message, Gmail (both automatically require a Slack \
-Approve/Deny DM to the workflow owner before sending), Sheets row update (no approval needed).
+Trello trigger, Google Drive trigger, Cron/schedule trigger; outputs: Slack message, Gmail \
+(both automatically require a Slack Approve/Deny DM to the workflow owner before sending), \
+Sheets row update, Trello card creation, Google Docs create/update, Google Drive upload, \
+Google Slides presentation creation (none of these last five require approval).
 
 The user's request requires a system NOT in that list. A correct response should:
   1. Clearly state the specific integration is not supported (no hedging)

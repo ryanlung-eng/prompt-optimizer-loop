@@ -275,6 +275,20 @@ async def run_optimization_loop(
         for node_name, prompt in current_prompts.items():
             results = await _evaluate_prompt(evaluator, judge, prompt, inputs)
             _print_score_table(node_name, 0, results, dim_names)
+            # Log to MLflow the same way _optimize_node does for the optimization
+            # loop — this branch used to skip tracker.start_iteration/log_results
+            # entirely, so evaluate-only runs never persisted a gap_report artifact
+            # even though _print_gap_report's "(see MLflow artifact)" message
+            # claimed one existed. Without this, the truncated-to-10 console
+            # output was the only record of the run — the rest was unrecoverable.
+            with tracker.start_iteration(
+                iteration=0,
+                node_name=node_name,
+                prompt_text=prompt,
+                prompt_version=f"v0_{_prompt_hash(prompt)}",
+                tags={"type": "evaluate_only"},
+            ) as run:
+                tracker.log_results(run, results, dim_names)
             all_results.extend(results)
         _print_gap_report(all_results)
         return

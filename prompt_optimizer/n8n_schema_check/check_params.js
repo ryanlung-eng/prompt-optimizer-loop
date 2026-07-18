@@ -121,6 +121,8 @@ const NODE_TYPE_MAP = {
   "n8n-nodes-base.googleDriveTrigger": ["n8n-nodes-base/dist/nodes/Google/Drive/GoogleDriveTrigger.node.js", "GoogleDriveTrigger"],
   "n8n-nodes-base.googleDrive": ["n8n-nodes-base/dist/nodes/Google/Drive/GoogleDrive.node.js", "GoogleDrive"],
   "n8n-nodes-base.googleSlides": ["n8n-nodes-base/dist/nodes/Google/Slides/GoogleSlides.node.js", "GoogleSlides"],
+  "n8n-nodes-base.googleCalendar": ["n8n-nodes-base/dist/nodes/Google/Calendar/GoogleCalendar.node.js", "GoogleCalendar"],
+  "n8n-nodes-base.googleCalendarTrigger": ["n8n-nodes-base/dist/nodes/Google/Calendar/GoogleCalendarTrigger.node.js", "GoogleCalendarTrigger"],
   "n8n-nodes-base.httpRequest": ["n8n-nodes-base/dist/nodes/HttpRequest/HttpRequest.node.js", "HttpRequest"],
   "n8n-nodes-base.executeWorkflow": ["n8n-nodes-base/dist/nodes/ExecuteWorkflow/ExecuteWorkflow/ExecuteWorkflow.node.js", "ExecuteWorkflow"],
   "n8n-nodes-base.if": ["n8n-nodes-base/dist/nodes/If/If.node.js", "If"],

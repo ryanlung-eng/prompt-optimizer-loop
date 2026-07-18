@@ -27,8 +27,8 @@ def _unwrap(e: Exception) -> Exception:
 # Supported integrations manifest (single source of truth)           #
 # ------------------------------------------------------------------ #
 
-SUPPORTED_TRIGGERS = ["cron", "gmail", "slack", "jira", "sheets", "trello", "drive"]
-SUPPORTED_OUTPUTS = ["slack_message", "email", "sheets_update", "trello_card", "docs_update", "drive_upload", "slides_create"]
+SUPPORTED_TRIGGERS = ["cron", "gmail", "slack", "jira", "sheets", "trello", "drive", "calendar"]
+SUPPORTED_OUTPUTS = ["slack_message", "email", "sheets_update", "trello_card", "docs_update", "drive_upload", "slides_create", "calendar_event"]
 # Outbound outputs that require an optional approval gate
 OUTBOUND_OUTPUTS = ["slack_message", "email"]
 
@@ -103,6 +103,22 @@ _COMBINATIONS = [
     ("sheets", "slides_create"),
     ("trello", "slides_create"),
     ("drive",  "slides_create"),
+    # Google Calendar-triggered (new/updated/cancelled event)
+    ("calendar", "slack_message"),
+    ("calendar", "email"),
+    ("calendar", "sheets_update"),
+    # Google Calendar output (create an event) from existing triggers
+    ("cron",   "calendar_event"),
+    ("gmail",  "calendar_event"),
+    ("jira",   "calendar_event"),
+    ("sheets", "calendar_event"),
+    ("trello", "calendar_event"),
+    ("drive",  "calendar_event"),
+    # Cross-connector combos involving Calendar
+    ("calendar", "trello_card"),
+    ("calendar", "docs_update"),
+    ("calendar", "drive_upload"),
+    ("calendar", "slides_create"),
 ]
 
 # ------------------------------------------------------------------ #
@@ -131,15 +147,17 @@ The user should never need to say who approves it.
 Supported integrations (ONLY these exist — do not invent others):
   TRIGGERS : Gmail (new email matching conditions), Slack message, Google Sheets \
 (new/updated row), Jira issue event, Cron/Schedule, Trello (new/updated card), \
-Google Drive (new/updated file in a watched folder)
+Google Drive (new/updated file in a watched folder), Google Calendar (event \
+created/updated/cancelled/started/ended)
   OUTPUTS  : Send Slack message to a channel, Send Gmail, Update Google Sheets row, \
 Create a Trello card, Create/update a Google Doc, Upload a file to Google Drive, \
-Create a Google Slides presentation
+Create a Google Slides presentation, Create a Google Calendar event
   APPROVAL : Every Slack message or email send is MANDATORY-approved — the \
 requester automatically gets a Slack DM with Approve/Deny buttons and a preview \
 before it sends. This is not optional and the user never asks for it themselves. \
-Sheets updates, Trello cards, Google Docs updates, Google Drive uploads, and Google \
-Slides presentations are not messages sent to a person, so they do not go through approval.
+Sheets updates, Trello cards, Google Docs updates, Google Drive uploads, Google \
+Slides presentations, and Google Calendar events are not messages sent to a person, \
+so they do not go through approval.
 
 Tone: conversational Slack DM, may have mild typos, 3–10 sentences.
 Return ONLY a valid JSON array of strings, no other text."""
@@ -168,16 +186,18 @@ Every message you're given was generated as an IN-DISTRIBUTION request — i.e. 
 it only ever describes one of these ACTUALLY SUPPORTED integrations, so treat \
 ALL of them as available and never say one "is not supported":
   TRIGGERS : Gmail, Slack message, Google Sheets, Jira issue event, Cron/Schedule, \
-Trello (new/updated card), Google Drive (new/updated file in a watched folder)
+Trello (new/updated card), Google Drive (new/updated file in a watched folder), \
+Google Calendar (event created/updated/cancelled/started/ended)
   OUTPUTS  : Slack message, Gmail, Google Sheets row update, Trello card creation, \
-Google Docs create/update, Google Drive upload, Google Slides presentation creation
+Google Docs create/update, Google Drive upload, Google Slides presentation creation, \
+Google Calendar event creation
 
 Describe the exact workflow structure, key nodes, and any approval gates a \
 high-quality assistant would build for the request. Do NOT say an integration \
 listed above is unavailable or unsupported — every message you see here uses \
 only supported integrations by construction, even ones (Trello, Google Docs, \
-Google Drive, Google Slides) that might not be part of your own general \
-knowledge of typical n8n deployments.
+Google Drive, Google Slides, Google Calendar) that might not be part of your \
+own general knowledge of typical n8n deployments.
 
 Return ONLY a valid JSON array of strings, one per input message."""
 

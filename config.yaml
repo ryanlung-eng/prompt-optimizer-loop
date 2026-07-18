@@ -21,6 +21,7 @@ prompts:
     Google Docs enabled, id: "N7bH4jC1mZ8qFdWe"
     Google Drive enabled, id: "P5tL9xM3vB7nJhKr"
     Google Slides enabled, id: "T8vN2xQ4mW6rL9pJ"
+    Google Calendar enabled, id: "R4cH7wZ2nD9xL3vM"
 
     User ID:
     {{ $('Slack Trigger').item.json.user }}

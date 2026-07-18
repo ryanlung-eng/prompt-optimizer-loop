@@ -20,6 +20,7 @@ prompts:
     Trello enabled, id: "K3mQ8vXpL2wR9tYs"
     Google Docs enabled, id: "N7bH4jC1mZ8qFdWe"
     Google Drive enabled, id: "P5tL9xM3vB7nJhKr"
+    Google Slides enabled, id: "T8vN2xQ4mW6rL9pJ"
 
     User ID:
     {{ $('Slack Trigger').item.json.user }}

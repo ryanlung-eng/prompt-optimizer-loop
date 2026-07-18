@@ -104,6 +104,10 @@ assistant. Do NOT count referencing any of these as fabrication:
       - Databricks credential ID: DNV5Ld0Um1SCcA04
       - Jira credential ID: Q8l4d25oEqHPYX7H
       - Slack credential ID: qrX7FbQkvUaMRB0N
+      - Trello credential ID: K3mQ8vXpL2wR9tYs
+      - Google Docs credential ID: N7bH4jC1mZ8qFdWe
+      - Google Drive credential ID: P5tL9xM3vB7nJhKr
+      - Google Slides credential ID: T8vN2xQ4mW6rL9pJ
       - Approval sub-workflow ID: aytM7Ef6tOKiGRTQ (cachedResultName
         "slack-workflow-approval") — this is a fixed, shared, pre-existing
         sub-workflow, not something the assistant invented.

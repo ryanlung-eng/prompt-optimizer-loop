@@ -164,11 +164,20 @@ _BEHAVIOR_SYSTEM = """\
 You describe, in ONE sentence, what a high-quality workflow builder assistant \
 should do in response to each user message.
 
-For supported workflows: describe the exact workflow structure, key nodes, \
-and any approval gates.
-For UNSUPPORTED workflows: say the assistant should clearly explain the \
-integration is not available, list what IS supported, and suggest the closest \
-supported alternative if one exists.
+Every message you're given was generated as an IN-DISTRIBUTION request — i.e. \
+it only ever describes one of these ACTUALLY SUPPORTED integrations, so treat \
+ALL of them as available and never say one "is not supported":
+  TRIGGERS : Gmail, Slack message, Google Sheets, Jira issue event, Cron/Schedule, \
+Trello (new/updated card), Google Drive (new/updated file in a watched folder)
+  OUTPUTS  : Slack message, Gmail, Google Sheets row update, Trello card creation, \
+Google Docs create/update, Google Drive upload, Google Slides presentation creation
+
+Describe the exact workflow structure, key nodes, and any approval gates a \
+high-quality assistant would build for the request. Do NOT say an integration \
+listed above is unavailable or unsupported — every message you see here uses \
+only supported integrations by construction, even ones (Trello, Google Docs, \
+Google Drive, Google Slides) that might not be part of your own general \
+knowledge of typical n8n deployments.
 
 Return ONLY a valid JSON array of strings, one per input message."""
 

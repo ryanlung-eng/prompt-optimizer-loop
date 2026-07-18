@@ -62,6 +62,28 @@ _CONVERSATION_EXPR = "{{ $('Thread Formatter').item.json.conversation }}"
 _USER_ID_EXPR = "{{ $('Slack Trigger').item.json.user }}"
 _TIME_SAVED_EXPR = "{{ $('AI Agent').item.json.output.time_saved }}"
 
+# Terse gateway/throttling phrases seen wrapped in an HTTP 200 body instead of
+# a proper 429 — checked case-insensitively as whole phrases, not single loose
+# words like "busy"/"overloaded" alone, since a genuine KA response can
+# legitimately discuss rate limiting in passing when building an HTTP Request
+# node with retry/batching options (this domain's own KB documents that
+# option). Requires the content to ALSO be short — a real workflow-builder
+# reply (JSON or even a short clarifying question) essentially never comes in
+# this short; a gateway throttling notice almost always does.
+_RATE_LIMIT_PHRASES = (
+    "rate limit exceeded", "too many requests", "quota exceeded",
+    "request was throttled", "please try again later",
+    "server is currently overloaded", "server is currently unavailable",
+)
+_RATE_LIMIT_MAX_LEN = 200
+
+
+def _looks_like_rate_limit_message(content: str) -> bool:
+    if len(content) > _RATE_LIMIT_MAX_LEN:
+        return False
+    lowered = content.lower()
+    return any(phrase in lowered for phrase in _RATE_LIMIT_PHRASES)
+
 
 def _synthetic_user_id(inp: SyntheticInput) -> str:
     """
@@ -260,6 +282,18 @@ class WorkflowEvaluator:
             raise ValueError(
                 f"Empty content from {endpoint_url}. finish_reason={finish_reason!r}. "
                 f"Raw response: {json.dumps(body)[:1500]}"
+            )
+        # Some gateways/serving layers throttle by returning HTTP 200 with a
+        # rate-limit/throttling message AS the message content, rather than a
+        # proper 4xx status — the status-code check above never sees this, so
+        # it was previously accepted as a genuine (if content-free) KA
+        # response, cached, and later misread by the gap report as "the KA
+        # doesn't know this integration" rather than "this call got throttled."
+        # Treat it as retryable instead, same as an explicit 429 would be.
+        if _looks_like_rate_limit_message(content):
+            raise ValueError(
+                f"Suspected rate-limit/throttling response disguised as 200 OK from "
+                f"{endpoint_url}: {content[:300]}"
             )
         return content
 

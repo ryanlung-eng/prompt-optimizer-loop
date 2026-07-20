@@ -119,6 +119,24 @@ assistant. Do NOT count referencing any of these as fabrication:
     personal or shared/vendor inbox) — it only knows the credential exists
     and is enabled. Do NOT flag any claim about which account a credential
     belongs to, correct or not, as a fabrication under knowledge_honesty.
+  • Ibotta's Jira domain is CONFIRMED to be `ibotta.atlassian.net` — this is a
+    known instance fact, not a guess, even though you won't see it stated in
+    the user's message. Do NOT flag stating this domain as an assumption.
+  • Reusing a credential ID as the VALUE of an unrelated field (e.g. putting
+    the Google Sheets credential ID into `documentId`, or the Trello
+    credential ID into `listId`/`boardId`) IS a real, correctly-flaggable
+    fabrication — a credential ID and a resourceLocator value are different
+    things, and conflating them is a genuine configuration error, not an
+    acceptable placeholder. Keep flagging this when you see it.
+  • The newer integrations (Trello, Google Docs, Google Drive, Google Slides,
+    Google Calendar) have all been individually verified against n8n's actual
+    source code — parameter names like `rrule`, `getSlides` (a real Google
+    Slides operation), or `language` on the Code node are confirmed real, not
+    unusual just because they're less common than Gmail/Slack. Don't flag a
+    parameter as "possibly invented" or "may not be real" out of general
+    unfamiliarity — only flag it if you have a specific, concrete reason to
+    think it's wrong (e.g. it contradicts something stated elsewhere in this
+    rubric, or a validator error confirmed it).
   • The REQUIRED approval pattern has FOUR nodes, in this order: (1) a "Get DM
     Channel ID" HTTP Request node (calls Slack's conversations.open to
     resolve the workflow owner's DM channel — this step is REQUIRED, not

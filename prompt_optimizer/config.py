@@ -5,6 +5,8 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from .rag_retriever import RAGConfig
+
 
 @dataclass
 class PromptNodeConfig:
@@ -84,6 +86,7 @@ class Config:
     optimizer: OptimizerConfig
     judge: JudgeConfig
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
+    rag: RAGConfig = field(default_factory=RAGConfig)
 
 
 def _resolve(value: str) -> str:
@@ -152,5 +155,16 @@ def load_config(path: str = "config.yaml") -> Config:
         kb_path=bm.get("kb_path", "knowledge-base-upload"),
     )
 
+    rag_raw = raw.get("rag", {})
+    rag = RAGConfig(
+        enabled=rag_raw.get("enabled", False),
+        endpoint_name=rag_raw.get("endpoint_name", "n8n-kb-endpoint"),
+        index_name=rag_raw.get("index_name", "main.n8n_kb.doc_chunks_index"),
+        top_k=rag_raw.get("top_k", 5),
+        max_context_chars=rag_raw.get("max_context_chars", 12000),
+        query_type=rag_raw.get("query_type", "hybrid"),
+        use_reranker=rag_raw.get("use_reranker", True),
+    )
+
     return Config(prompts=prompts, databricks=databricks, synthetic_data=synthetic_data,
-                  optimizer=optimizer, judge=judge, benchmark=benchmark)
+                  optimizer=optimizer, judge=judge, benchmark=benchmark, rag=rag)

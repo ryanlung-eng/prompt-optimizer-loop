@@ -119,6 +119,20 @@ synthetic_data:
   categories: []   # unused — matrix is defined in synthetic_data.py
   cache_path: "/Workspace/Users/ryan.lung@ibotta.com/n8n-optimizer-cache/synthetic_dataset.json"
 
+# Custom RAG pipeline (rag_setup.py + prompt_optimizer/rag_retriever.py) —
+# replaces pasting the entire KB into every prompt. `enabled: false` until
+# rag_setup.py has been run once and the index is live; flip to true to have
+# loop.py/evaluator.py retrieve context per-query instead of using the static
+# prompt.
+rag:
+  enabled: false
+  endpoint_name: "n8n-kb-endpoint"
+  index_name: "main.n8n_kb.doc_chunks_index"
+  top_k: 5
+  max_context_chars: 12000
+  query_type: "hybrid"     # ANN + keyword (RRF) — Databricks' recommended default
+  use_reranker: true
+
 optimizer:
   score_threshold: 0.85
   # Convergence requires BOTH this AND score_threshold — the judge score

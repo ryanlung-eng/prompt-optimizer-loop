@@ -68,27 +68,21 @@ os.environ["DATABRICKS_TOKEN"] = _ctx.apiToken().get()
 
 from prompt_optimizer.kb_chunker import chunk_directory_by_file
 
-# dev.platform already exists (and the docs are already uploaded to the
-# automation-builder volume there) — no CREATE CATALOG/SCHEMA needed, and no
-# permission for it anyway. Table name is scoped with the automation_builder_
-# prefix since platform is a shared schema other tables may already live in.
-CATALOG = "dev"
-SCHEMA = "platform"
-SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.automation_builder_kb_chunks"
+CATALOG = "main"
+SCHEMA = "n8n_kb"
+SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.big_corpus_chunks"
 ENDPOINT_NAME = "n8n-kb-endpoint"
-INDEX_NAME = f"{CATALOG}.{SCHEMA}.automation_builder_kb_chunks_index"
+INDEX_NAME = f"{CATALOG}.{SCHEMA}.big_corpus_chunks_index"
 EMBEDDING_MODEL_ENDPOINT = "databricks-gte-large-en"
-DOCS_DIR = "/Volumes/dev/platform/automation-builder/docs"
-EXAMPLES_DIR = "/Volumes/dev/platform/automation-builder/examples"
+KB_DIR = "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop/knowledge-base-upload"
 
 # COMMAND ----------
 
-# Merged into one table/index — id_prefix keeps the two sources' IDs from
-# colliding (both would otherwise restart numbering at 000).
-doc_chunks = chunk_directory_by_file(DOCS_DIR, id_prefix="docs")
-example_chunks = chunk_directory_by_file(EXAMPLES_DIR, id_prefix="examples")
-chunks = doc_chunks + example_chunks
-print(f"{len(doc_chunks)} chunks from {DOCS_DIR}, {len(example_chunks)} from {EXAMPLES_DIR}, {len(chunks)} total")
+# spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
+# spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
+
+chunks = chunk_directory_by_file(KB_DIR)
+print(f"{len(chunks)} chunks (one per file) parsed from {KB_DIR}")
 
 rows = [c.to_dict() for c in chunks]
 df = spark.createDataFrame(rows)

@@ -17,7 +17,7 @@ class RAGConfig:
     # — false until rag_setup.py has been run once and the index is live.
     enabled: bool = False
     endpoint_name: str = "n8n-kb-endpoint"
-    index_name: str = "main.n8n_kb.big_corpus_chunks_index"
+    index_name: str = "dev.platform.automation_builder_kb_chunks_index"
     top_k: int = 5
     # Character budget, not a token budget — see retrieve_context() docstring
     # for why. ~12000 chars is a conservative ~3000-token ceiling at a ~4

@@ -261,6 +261,64 @@ CRITICAL: Use valid JSON syntax only. Double quotes for all strings and keys.
 Lowercase true/false for booleans. Never use single quotes, True, False, or
 None — these are Python syntax and will break the parser."""
 
+_WORKFLOW_SOUNDNESS_SYSTEM = """\
+You are a skeptical senior n8n engineer doing a pre-merge review of a generated \
+workflow. A separate deterministic checker already confirmed this JSON parses, \
+every node type/parameter/enum value is real, and every node is reachable from \
+a trigger — your job is everything a static checker CANNOT verify: whether this \
+workflow would actually behave correctly and safely if activated, given what the \
+user asked for.
+
+Specifically hunt for:
+  • INFINITE LOOP / SELF-TRIGGER RISK — a trigger that could fire again because of
+    this workflow's OWN output (e.g. a Slack/Gmail trigger with no guard against
+    reacting to the bot's own message; a Google Sheets trigger watching a sheet
+    this same workflow writes to).
+  • LOGIC THAT DOESN'T MATCH STATED INTENT — an IF/Switch condition checking the
+    wrong field, a filter that wouldn't actually select what the user described,
+    an AI Agent prompt asking for something the rest of the workflow can't supply.
+  • REDUNDANT OR DEAD LOGIC — a node whose output nothing meaningful depends on,
+    a condition that can never be false/true given how it's used, duplicate steps.
+  • MISSING SAFETY PATTERNS FOR WHAT WAS ASKED — e.g. the user asked for an
+    approval step and the outbound send bypasses it; error-prone external calls
+    (HTTP Request to a flaky API) with no retry/error handling when the user's
+    request implies reliability matters.
+  • SUB-NODE / SCHEMA MISMATCHES A STATIC CHECK WOULDN'T CATCH — e.g. a
+    Structured Output Parser whose example schema doesn't actually match the
+    fields referenced downstream; an aggregation step that doesn't actually
+    aggregate the fields needed later.
+
+Do NOT re-flag things a deterministic parameter/enum/connectivity checker would
+already catch (invented parameter names, disconnected nodes, wrong credential
+IDs) — assume those are handled elsewhere. Focus only on judgment calls: would
+this workflow, AS DESIGNED, actually do the right thing when it runs.
+
+If you find nothing wrong, return an empty list — do not invent issues to have
+something to say.
+
+CRITICAL: Output raw JSON only, starting with { and ending with }. No markdown,
+no code fences, no explanations before or after.
+
+{
+  "issues": ["<one specific, concrete design/logic problem — name the node(s) involved
+    and exactly what's wrong, e.g. 'Slack Trigger fires on trigger:[\\"message\\"] with no
+    bot_id check, and Send Slack Message posts to the same channel — the bot's own
+    message will re-trigger this workflow.'>", ...],
+  "would_approve": true or false
+}"""
+
+_WORKFLOW_SOUNDNESS_USER_TEMPLATE = """\
+ORIGINAL USER REQUEST:
+{user_message}
+
+WHAT A GREAT RESPONSE SHOULD DO:
+{expected_behavior}
+
+GENERATED WORKFLOW JSON:
+{workflow_json}
+
+Output ONLY the JSON review object for the workflow above."""
+
 _JUDGE_USER_TEMPLATE = """\
 ORIGINAL USER REQUEST:
 {user_message}
@@ -299,6 +357,14 @@ class EvalResult:
     transcript: List[dict] = field(default_factory=list)
     structural: StructuralResult = field(default_factory=StructuralResult)
     weighted_score: float = field(default=0.0, init=False)
+    # Layer 3 — adversarial "would an n8n expert approve this" review. Distinct
+    # from `hallucinated_details` (knowledge_honesty dimension, fabrication-
+    # focused) and from `structural.errors` (deterministic, certain) — these
+    # are design/logic judgment calls a static checker can't make. Empty list
+    # both when nothing was found AND when the review itself wasn't run
+    # (e.g. non-JSON response) — check `soundness_reviewed` to tell those apart.
+    soundness_issues: List[str] = field(default_factory=list)
+    soundness_reviewed: bool = False
 
     def __post_init__(self):
         pass   # weighted_score set by judge after creation
@@ -393,6 +459,36 @@ class DatabricksJudge:
             raise ValueError(f"No JSON object found in judge response: {content[:1500]}")
         return json.loads(content[start:end + 1])
 
+    async def _review_soundness(
+        self,
+        client: httpx.AsyncClient,
+        inp: SyntheticInput,
+        actual_response: str,
+    ) -> Tuple[List[str], bool]:
+        """Layer 3: adversarial design/logic review, separate call from the
+        scoring judge above. Only worth running when there's an actual
+        workflow to review — skipped for OOD (nothing was or should have been
+        built) and for responses with no parseable JSON at all."""
+        if inp.is_ood:
+            return [], False
+        start, end = actual_response.find("{"), actual_response.rfind("}")
+        if start == -1 or end == -1 or end < start:
+            return [], False
+        workflow_json = actual_response[start:end + 1]
+
+        user = _WORKFLOW_SOUNDNESS_USER_TEMPLATE.format(
+            user_message=inp.text,
+            expected_behavior=inp.expected_behavior,
+            workflow_json=workflow_json,
+        )
+        try:
+            parsed = await self._call(client, _WORKFLOW_SOUNDNESS_SYSTEM, user)
+            issues = parsed.get("issues", [])
+            return (issues if isinstance(issues, list) else []), True
+        except Exception as e:
+            print(f"  Warning: soundness review failed for '{inp.text[:60]}…': {_unwrap(e)}")
+            return [], False
+
     async def evaluate_one(
         self,
         client: httpx.AsyncClient,
@@ -421,6 +517,8 @@ class DatabricksJudge:
             hallucinated = []
             comment = f"Judge error: {cause}"
 
+        soundness_issues, soundness_reviewed = await self._review_soundness(client, inp, actual_response)
+
         result = EvalResult(
             input=inp,
             actual_response=actual_response,
@@ -430,6 +528,8 @@ class DatabricksJudge:
             overall_comment=comment,
             transcript=transcript or [],
             structural=validate_workflow_json(actual_response),
+            soundness_issues=soundness_issues,
+            soundness_reviewed=soundness_reviewed,
         )
         result.weighted_score = _weighted_score(scores, self._judge_config.dimensions)
         return result

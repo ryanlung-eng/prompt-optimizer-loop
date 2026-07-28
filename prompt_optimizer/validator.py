@@ -244,11 +244,188 @@ def _iter_connection_targets(connections: dict):
                         yield src_name, conn_type, out_idx, conn["node"], conn.get("index", 0)
 
 
+# ---------------------------------------------------------------------------
+# Deeper graph-soundness checks — catch workflows where every individual
+# node/connection is individually well-formed but the GRAPH AS A WHOLE
+# wouldn't actually behave correctly at runtime: a sub-node that's "in the
+# connections dict" but wired with the wrong type, a cluster of nodes with no
+# path back to any real entry point, or a trigger/output pair shaped like an
+# infinite loop. These go beyond "no_disconnected_nodes" (which only checks a
+# node touches the connections graph SOMEWHERE) to "is this node actually
+# reachable via a real execution path from a trigger."
+# ---------------------------------------------------------------------------
+
+# Every trigger-type node documented in this catalog. Used for reachability
+# BFS (a workflow can only ever start executing from one of these) — kept as
+# an explicit list rather than a "contains 'trigger'" substring match (the
+# looser check `has_trigger_node` below already does that) so this is precise
+# about which nodes are real entry points versus something merely named like one.
+_TRIGGER_TYPES = {
+    "n8n-nodes-base.manualTrigger", "n8n-nodes-base.scheduleTrigger", "n8n-nodes-base.cron",
+    "n8n-nodes-base.webhook", "n8n-nodes-base.executeWorkflowTrigger",
+    "n8n-nodes-base.gmailTrigger", "n8n-nodes-base.jiraTrigger",
+    "n8n-nodes-base.googleSheetsTrigger", "n8n-nodes-base.slackTrigger",
+    "n8n-nodes-base.trelloTrigger", "n8n-nodes-base.googleDriveTrigger",
+    "n8n-nodes-base.googleCalendarTrigger",
+}
+
+
+def _is_sub_node_type(node_type: str) -> bool:
+    """True for any node type that only ever plugs into an ai_* slot (Model,
+    Memory, Tool, Output Parser, etc.) — never wired via 'main'. Every
+    @n8n/n8n-nodes-langchain.* type except the Agent itself is one of these,
+    plus this instance's custom Databricks chat-model sub-node."""
+    return node_type == "CUSTOM.lmChatDatabricks" or (
+        node_type.startswith("@n8n/n8n-nodes-langchain.") and not node_type.endswith(".agent")
+    )
+
+
+def _check_subnode_connections(nodes: List[dict], connections: dict) -> List[str]:
+    """A sub-node (Model/Memory/Tool/Output Parser) can be present in `nodes`
+    and even appear as a connections KEY, but still be functionally
+    unconnected if every one of its outgoing edges is typed 'main' instead of
+    the required ai_* type (main silently does nothing for these) — this is a
+    real, previously-unconfirmed hallucination shape distinct from the
+    already-caught "not in connections at all" case. Checks EVERY sub-node
+    type, not just the Model slot ai_agents_have_model already covers."""
+    non_main_sources = {
+        src for src, conn_type, _, _, _ in _iter_connection_targets(connections)
+        if conn_type != "main"
+    }
+    errors = []
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        node_type = n.get("type", "")
+        if _is_sub_node_type(node_type) and n.get("name") not in non_main_sources:
+            errors.append(
+                f"Node '{n.get('name')}' ({node_type}) is a sub-node (Model/Memory/Tool/"
+                f"Output Parser) but has no outgoing connection of any ai_* type — either "
+                f"it's missing from 'connections' entirely, or it's wired with 'main' "
+                f"(which silently does nothing for sub-nodes)."
+            )
+    return errors
+
+
+def _check_reachability(nodes: List[dict], connections: dict) -> List[str]:
+    """A node can pass no_disconnected_nodes (it touches the connections
+    graph SOMEWHERE) while still never actually running, if it's part of a
+    sub-graph with no path back to any real trigger — e.g. two parallel
+    main-chains where only one starts at a trigger. BFS forward from every
+    trigger via 'main' edges; a sub-node counts as reachable if the node it
+    points to via any ai_* edge is itself reachable (fixpoint, so nesting
+    depth doesn't matter)."""
+    node_by_name = {n.get("name"): n for n in nodes if isinstance(n, dict)}
+    trigger_names = {
+        name for name, n in node_by_name.items() if n.get("type") in _TRIGGER_TYPES
+    }
+    if not trigger_names or len(nodes) <= 1:
+        return []  # has_trigger_node already flags the no-trigger-at-all case
+
+    main_forward: dict = {}
+    subnode_targets: dict = {}
+    for src, conn_type, _, target, _ in _iter_connection_targets(connections):
+        bucket = main_forward if conn_type == "main" else subnode_targets
+        bucket.setdefault(src, set()).add(target)
+
+    reachable = set(trigger_names)
+    frontier = list(trigger_names)
+    while frontier:
+        current = frontier.pop()
+        for nxt in main_forward.get(current, ()):
+            if nxt not in reachable:
+                reachable.add(nxt)
+                frontier.append(nxt)
+
+    # Fixpoint pass for sub-nodes: a sub-node is reachable if ANY node it
+    # points to (its parent) is reachable — repeat until nothing new is added,
+    # since a Tool sub-node could itself have its own Model sub-node, etc.
+    changed = True
+    while changed:
+        changed = False
+        for src, targets in subnode_targets.items():
+            if src not in reachable and targets & reachable:
+                reachable.add(src)
+                changed = True
+
+    unreachable = [
+        name for name, n in node_by_name.items()
+        if name not in reachable and n.get("type") != "n8n-nodes-base.stickyNote"
+    ]
+    if not unreachable:
+        return []
+    return [
+        f"Node(s) present in the workflow but not reachable via any execution "
+        f"path from a trigger node (they touch the connections graph somewhere, "
+        f"but nothing leads to them from an actual entry point): {sorted(unreachable)}"
+    ]
+
+
+# Substrings that indicate a condition/code node is guarding against a
+# platform sending itself a message it would then react to again — checked
+# loosely (anywhere in a node's parameters as a raw string), since the exact
+# expression shape varies (bot_id check, message subtype check, comparing
+# against a known bot user ID, etc.) and false negatives here are far less
+# costly than false positives on a real, working self-loop guard.
+_SELF_LOOP_GUARD_HINTS = ("bot_id", "bot_message", "subtype", "is_bot", "isbot")
+
+
+def _check_trigger_self_loop_risk(nodes: List[dict], connections: dict) -> List[str]:
+    """Heuristic, not a hard failure: a Slack Trigger listening broadly for
+    messages ('message'/'any_event', not just 'app_mention') with a reachable
+    outbound Slack post and no visible bot/self-message guard anywhere in the
+    workflow is a classic shape for an infinite loop (the bot's own message
+    re-triggers the workflow). This can't be proven with certainty from
+    static JSON alone (the trigger and send channel might differ, the guard
+    might be expressed unusually) — reported as an advisory warning, not
+    folded into `errors`/`checks`, so it never fails a workflow outright."""
+    node_by_name = {n.get("name"): n for n in nodes if isinstance(n, dict)}
+
+    risky_slack_triggers = []
+    for name, n in node_by_name.items():
+        if n.get("type") != "n8n-nodes-base.slackTrigger":
+            continue
+        trigger_events = n.get("parameters", {}).get("trigger", [])
+        if isinstance(trigger_events, list) and (
+            "message" in trigger_events or "any_event" in trigger_events
+        ):
+            risky_slack_triggers.append(name)
+    if not risky_slack_triggers:
+        return []
+
+    has_slack_send = any(
+        isinstance(n, dict) and n.get("type") == "n8n-nodes-base.slack"
+        and n.get("parameters", {}).get("operation") in ("post", "schedule")
+        for n in nodes
+    )
+    if not has_slack_send:
+        return []
+
+    all_params_text = json.dumps([n.get("parameters", {}) for n in nodes if isinstance(n, dict)]).lower()
+    has_guard = any(hint in all_params_text for hint in _SELF_LOOP_GUARD_HINTS)
+    if has_guard:
+        return []
+
+    return [
+        f"Possible infinite-loop risk (not certain — review manually): Slack "
+        f"Trigger(s) {sorted(risky_slack_triggers)} listen broadly for "
+        f"'message'/'any_event', and a Slack send action exists in this "
+        f"workflow, but no node's parameters mention anything resembling a "
+        f"bot/self-message guard (e.g. checking bot_id or message subtype). "
+        f"If the send target overlaps with what the trigger watches, the "
+        f"bot's own message could re-trigger this workflow indefinitely."
+    ]
+
+
 @dataclass
 class StructuralResult:
     is_json: bool = False
     checks: dict = field(default_factory=dict)   # check_name -> bool
     errors: List[str] = field(default_factory=list)
+    # Advisory findings — heuristic, not certain from static JSON alone (e.g.
+    # possible infinite-loop shapes). Never affects `.valid`/`.score`; surfaced
+    # separately so a workflow isn't hard-failed on a maybe.
+    warnings: List[str] = field(default_factory=list)
 
     @property
     def valid(self) -> bool:
@@ -470,5 +647,18 @@ def validate_workflow_json(text: str) -> StructuralResult:
     checks["no_unknown_type_versions"] = len(schema_findings["unknown_type_versions"]) == 0
     for findings in schema_findings.values():
         result.errors.extend(findings)
+
+    # Deeper graph-soundness checks (see the block above _iter_connection_targets
+    # for why these catch things no_disconnected_nodes/ai_agents_have_model miss).
+    subnode_errors = _check_subnode_connections(nodes, connections)
+    checks["sub_nodes_properly_connected"] = len(subnode_errors) == 0
+    result.errors.extend(subnode_errors)
+
+    reachability_errors = _check_reachability(nodes, connections)
+    checks["all_nodes_reachable_from_trigger"] = len(reachability_errors) == 0
+    result.errors.extend(reachability_errors)
+
+    # Advisory only — heuristic, never affects checks/.valid.
+    result.warnings.extend(_check_trigger_self_loop_risk(nodes, connections))
 
     return result

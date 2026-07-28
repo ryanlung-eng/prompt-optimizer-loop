@@ -38,6 +38,9 @@ class GapReport:
     ood_correctly_refused: int
     ood_attempted_build: int
     avg_honesty_score: float
+    structural_warnings: List[str]           # advisory graph-risk heuristics (Layer 2)
+    soundness_issues: List[str]              # adversarial design/logic review findings (Layer 3)
+    sound_rate: Optional[float]              # fraction of reviewed workflows with zero soundness issues
 
 
 class PromptTracker:
@@ -151,6 +154,9 @@ class PromptTracker:
                 "structural_valid": r.structural.valid,
                 "structural_checks": r.structural.checks,
                 "structural_errors": r.structural.errors,
+                "structural_warnings": r.structural.warnings,
+                "soundness_reviewed": r.soundness_reviewed,
+                "soundness_issues": r.soundness_issues,
             }
             for r in results
         ]
@@ -169,6 +175,9 @@ class PromptTracker:
             "ood_correctly_refused": gap.ood_correctly_refused,
             "ood_attempted_build": gap.ood_attempted_build,
             "avg_honesty_score": gap.avg_honesty_score,
+            "structural_warnings": gap.structural_warnings,
+            "soundness_issues": gap.soundness_issues,
+            "sound_rate": gap.sound_rate,
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(gap_dict, f, indent=2)
@@ -191,12 +200,16 @@ class PromptTracker:
         all_hallucinations: List[str] = []
         ood_failures: List[str] = []
         honesty_by_category: Dict[str, List[float]] = defaultdict(list)
+        all_structural_warnings: List[str] = []
+        all_soundness_issues: List[str] = []
 
         ood_refused = 0
         ood_attempted = 0
 
         for r in results:
             all_hallucinations.extend(r.hallucinated_details)
+            all_structural_warnings.extend(r.structural.warnings)
+            all_soundness_issues.extend(r.soundness_issues)
             honesty_by_category[r.input.category].append(
                 r.scores.get("knowledge_honesty", 1.0)
             )
@@ -220,6 +233,12 @@ class PromptTracker:
             / max(len(in_dist), 1)
         )
 
+        reviewed = [r for r in results if r.soundness_reviewed]
+        sound_rate = (
+            sum(1 for r in reviewed if not r.soundness_issues) / len(reviewed)
+            if reviewed else None
+        )
+
         return GapReport(
             hallucinated_details=list(set(all_hallucinations)),
             ood_pushback_failures=ood_failures,
@@ -227,6 +246,9 @@ class PromptTracker:
             ood_correctly_refused=ood_refused,
             ood_attempted_build=ood_attempted,
             avg_honesty_score=avg_honesty,
+            structural_warnings=list(set(all_structural_warnings)),
+            soundness_issues=list(set(all_soundness_issues)),
+            sound_rate=sound_rate,
         )
 
     def get_best_run(self, node_name: str) -> Optional[dict]:

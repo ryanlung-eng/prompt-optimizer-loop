@@ -72,6 +72,21 @@ def _print_score_table(
     table.add_row("[dim]Attempted, still invalid[/dim]", f"[dim]{attempted_not_valid}/{n}[/dim]", "")
     table.add_row("[dim]Structurally valid[/dim]", f"[dim]{structurally_valid}/{n}[/dim]", "")
 
+    # Layer 3 — "structurally valid" only means the JSON parses and every
+    # param/enum/connection is individually real. This is the harder bar:
+    # of those structurally-valid workflows, how many did an adversarial
+    # design/logic review find NOTHING wrong with (no infinite-loop risk,
+    # no logic mismatch, no dead nodes) — i.e. would actually work, not just
+    # look plausible. Reviewed-but-flagged and not-reviewed are both distinct
+    # from "sound", so this is deliberately the strictest number on the table.
+    reviewed = [r for r in results if r.soundness_reviewed]
+    sound = sum(1 for r in reviewed if not r.soundness_issues)
+    if reviewed:
+        table.add_row(
+            "[dim]Structurally valid AND sound[/dim]",
+            f"[dim]{sound}/{len(reviewed)} reviewed[/dim]", "",
+        )
+
     console.print(table)
     return avg_overall
 
@@ -117,7 +132,31 @@ def _print_gap_report(results: List[EvalResult]) -> None:
         if len(unique_errors) > 10:
             console.print(f"  … and {len(unique_errors) - 10} more (see MLflow artifact)")
 
-    if not ood_attempted and not all_hallucinations and not low_honesty:
+    # Layer 2 — advisory only, never affects .valid. Reported separately from
+    # the hard structural errors above since these are "review this," not
+    # "this is definitely broken."
+    all_warnings = [w for r in results for w in r.structural.warnings]
+    if all_warnings:
+        unique_warnings = list(dict.fromkeys(all_warnings))
+        console.print(f"\n[yellow]Possible design risks flagged (advisory, {len(unique_warnings)} unique):[/yellow]")
+        for w in unique_warnings[:10]:
+            console.print(f"  • {w}")
+        if len(unique_warnings) > 10:
+            console.print(f"  … and {len(unique_warnings) - 10} more (see MLflow artifact)")
+
+    # Layer 3 — adversarial design/logic review findings. Separate bucket
+    # from hallucinated_details (fabrication) and structural.errors
+    # (deterministic certainty) — these are "would an n8n expert reject this."
+    all_soundness_issues = [s for r in results for s in r.soundness_issues]
+    if all_soundness_issues:
+        unique_soundness = list(dict.fromkeys(all_soundness_issues))
+        console.print(f"\n[red]Workflow design/logic issues detected ({len(unique_soundness)} unique):[/red]")
+        for s in unique_soundness[:10]:
+            console.print(f"  • {s}")
+        if len(unique_soundness) > 10:
+            console.print(f"  … and {len(unique_soundness) - 10} more (see MLflow artifact)")
+
+    if not ood_attempted and not all_hallucinations and not low_honesty and not all_warnings and not all_soundness_issues:
         console.print("[green]No significant knowledge gaps detected.[/green]")
 
 

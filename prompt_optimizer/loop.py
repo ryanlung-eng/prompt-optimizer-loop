@@ -14,6 +14,7 @@ from .config import Config
 from .evaluator import WorkflowEvaluator
 from .judge import DatabricksJudge, EvalResult
 from .optimizer import PromptOptimizer
+from .hard_scenarios import load_hard_scenarios
 from .synthetic_data import SyntheticInput, generate_dataset
 from .tracker import PromptTracker
 
@@ -275,15 +276,26 @@ async def run_optimization_loop(
     config: Config,
     generate_only: bool = False,
     evaluate_only: bool = False,
+    dataset_mode: str = "synthetic",
 ):
     console.rule("[bold blue]n8n Prompt Optimizer[/bold blue]")
     console.print(f"  Nodes: {list(config.prompts.keys())}")
     console.print("  n8n write-back: disabled — copy the best prompt printed below into n8n manually")
     console.print()
 
-    # --- Synthetic dataset ---
-    console.rule("[dim]Synthetic dataset[/dim]")
-    inputs = await generate_dataset(config.synthetic_data, config.databricks)
+    # --- Dataset ---
+    # "synthetic": the ~200 LLM-generated trigger×output combos (breadth,
+    # catches hallucinations). "hard": the small hand-crafted multi-step
+    # scenarios in hard_scenarios.py (depth, catches graph-soundness bugs
+    # structural/enum checks can't see). "both": concatenate.
+    console.rule("[dim]Dataset[/dim]")
+    inputs: List[SyntheticInput] = []
+    if dataset_mode in ("synthetic", "both"):
+        inputs.extend(await generate_dataset(config.synthetic_data, config.databricks))
+    if dataset_mode in ("hard", "both"):
+        hard = load_hard_scenarios()
+        inputs.extend(hard)
+        console.print(f"  + {len(hard)} hard scenarios (hand-crafted)")
     ood_count = sum(1 for i in inputs if i.is_ood)
     console.print(f"  Dataset: {len(inputs)} inputs ({len(inputs) - ood_count} in-dist, {ood_count} OOD)")
 

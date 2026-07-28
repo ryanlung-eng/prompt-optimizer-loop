@@ -13,6 +13,8 @@ Usage examples:
   python optimize.py --generate-only         # only generate + cache synthetic dataset
   python optimize.py --evaluate-only         # score current prompts, no optimization
   python optimize.py --clear-cache           # delete cached synthetic dataset then run
+  python optimize.py --evaluate-only --dataset hard   # score against the hard scenarios only
+  python optimize.py --evaluate-only --dataset both   # synthetic + hard combined
 """
 import asyncio
 import sys
@@ -35,7 +37,11 @@ console = Console()
               help="Score current prompts without running the optimization loop")
 @click.option("--clear-cache", is_flag=True, default=False,
               help="Delete cached synthetic dataset before running")
-def main(config_path, iterations, generate_only, evaluate_only, clear_cache):
+@click.option("--dataset", type=click.Choice(["synthetic", "hard", "both"]),
+              default="synthetic", show_default=True,
+              help="synthetic = generated trigger×output combos, hard = hand-crafted "
+                   "multi-step scenarios (see hard_scenarios.py), both = concatenate")
+def main(config_path, iterations, generate_only, evaluate_only, clear_cache, dataset):
     from prompt_optimizer.config import load_config
     from prompt_optimizer.loop import run_optimization_loop
 
@@ -58,6 +64,7 @@ def main(config_path, iterations, generate_only, evaluate_only, clear_cache):
         config=cfg,
         generate_only=generate_only,
         evaluate_only=evaluate_only,
+        dataset_mode=dataset,
     ))
 
 

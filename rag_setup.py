@@ -55,7 +55,8 @@ SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.automation_builder_kb_chunks"
 ENDPOINT_NAME = "n8n-kb-endpoint"
 INDEX_NAME = f"{CATALOG}.{SCHEMA}.automation_builder_kb_chunks_index"
 EMBEDDING_MODEL_ENDPOINT = "databricks-gte-large-en"
-KB_DIR = "/Volumes/dev/platform/automation-builder/docs"
+DOCS_DIR = "/Volumes/dev/platform/automation-builder/docs"
+EXAMPLES_DIR = "/Volumes/dev/platform/automation-builder/examples"
 
 # COMMAND ----------
 
@@ -63,8 +64,12 @@ KB_DIR = "/Volumes/dev/platform/automation-builder/docs"
 
 # COMMAND ----------
 
-chunks = chunk_directory_by_file(KB_DIR)
-print(f"{len(chunks)} chunks (one per file) parsed from {KB_DIR}")
+# Merged into one table/index — id_prefix keeps the two sources' IDs from
+# colliding (both would otherwise restart numbering at 000).
+doc_chunks = chunk_directory_by_file(DOCS_DIR, id_prefix="docs")
+example_chunks = chunk_directory_by_file(EXAMPLES_DIR, id_prefix="examples")
+chunks = doc_chunks + example_chunks
+print(f"{len(doc_chunks)} chunks from {DOCS_DIR}, {len(example_chunks)} from {EXAMPLES_DIR}, {len(chunks)} total")
 
 rows = [c.to_dict() for c in chunks]
 df = spark.createDataFrame(rows)

@@ -78,19 +78,24 @@ def load_and_chunk(doc_path: str) -> List[DocChunk]:
     return chunk_markdown_by_section(text)
 
 
-def chunk_directory_by_file(dir_path: str) -> List[DocChunk]:
+def chunk_directory_by_file(dir_path: str, id_prefix: str = "") -> List[DocChunk]:
     """
     One chunk per `.md` file — for a corpus that's already split into
     topically-scoped files (e.g. knowledge-base-upload/, 59 files each
     covering one topic) rather than a single document with internal `## `
     section headers. Same principle as chunk_markdown_by_section: chunk on
     a boundary that already exists in the source, never a fixed-size window.
+
+    id_prefix disambiguates IDs when combining chunks from multiple
+    directories into one table (e.g. "docs"/"examples") — without it, two
+    calls each restart numbering at 000 and their `id` columns collide.
     """
+    prefix = f"{id_prefix}-" if id_prefix else ""
     chunks: List[DocChunk] = []
     for i, path in enumerate(sorted(Path(dir_path).glob("*.md"))):
         title = path.stem.replace("_", " ").replace("-", " ")
         chunks.append(DocChunk(
-            id=f"{i:03d}-{_slugify(path.stem)}",
+            id=f"{prefix}{i:03d}-{_slugify(path.stem)}",
             section_number=i,
             title=title,
             text=path.read_text().strip(),

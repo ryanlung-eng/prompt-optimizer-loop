@@ -213,3 +213,170 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
     print_benchmark_report(results, dim_names)
     print_qualitative_examples(results)
     return results
+
+
+# --------------------------------------------------------------------- #
+# Hard-scenario benchmark: production KA endpoint vs. the custom RAG     #
+# pipeline (frozen instructions.md + retrieval over knowledge-base-      #
+# upload/) — a harder, more realistic comparison than the 3-arm one      #
+# above, since it uses the Layer 4 hand-crafted scenarios (self-loops,   #
+# unwired sub-nodes, multi-hop chains) instead of the easier trigger×    #
+# output synthetic set.                                                  #
+# --------------------------------------------------------------------- #
+
+_HARD_ARMS = ["production", "custom_rag"]
+_HARD_ARM_LABELS = {
+    "production": "Production (KA endpoint)",
+    "custom_rag": "Custom RAG (frozen instructions.md + retrieved big-corpus context)",
+}
+
+
+async def run_hard_benchmark(
+    config: Config,
+    evaluator: WorkflowEvaluator,
+    judge: DatabricksJudge,
+) -> Dict[str, List[EvalResult]]:
+    from .hard_scenarios import load_hard_scenarios
+    from .rag_retriever import RAGConfig
+
+    inputs = load_hard_scenarios()
+    base_prompt = config.prompts[config.benchmark.node_name]
+    db = config.databricks
+    ka_endpoint = f"{db.workspace_url}/serving-endpoints/{db.eval_endpoint}/invocations"
+
+    instructions_path = Path("instructions.md")
+    if not instructions_path.exists():
+        raise FileNotFoundError(
+            f"instructions.md not found at {instructions_path.resolve()} — the "
+            f"custom-RAG arm needs it as the frozen, always-injected core."
+        )
+    base_instructions = instructions_path.read_text()
+
+    # Override enabled=True regardless of config.yaml's rag.enabled — running
+    # this benchmark IS the point, independent of whether the main eval loop
+    # has the pipeline switched on yet.
+    rag_config = RAGConfig(
+        enabled=True,
+        endpoint_name=config.rag.endpoint_name,
+        index_name=config.rag.index_name,
+        top_k=config.rag.top_k,
+        max_context_chars=config.rag.max_context_chars,
+        query_type=config.rag.query_type,
+        use_reranker=config.rag.use_reranker,
+    )
+
+    results: Dict[str, List[EvalResult]] = {}
+
+    console.print(f"  Running arm: production (KA endpoint) on {len(inputs)} hard scenarios…")
+    results["production"] = await _run_arm(
+        evaluator, judge, base_prompt, inputs, ka_endpoint, use_responses_api=True,
+    )
+
+    console.print(f"  Running arm: custom_rag on {len(inputs)} hard scenarios…")
+    pairs = await evaluator.run_batch_custom_rag(base_instructions, inputs, rag_config)
+    results["custom_rag"] = await judge.evaluate_batch(pairs)
+
+    return results
+
+
+def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names: List[str]) -> None:
+    table = Table(title="[bold]Hard-scenario benchmark: production KA vs. custom RAG pipeline[/bold]")
+    table.add_column("Metric", style="cyan")
+    for arm in _HARD_ARMS:
+        table.add_column(_HARD_ARM_LABELS[arm], justify="right")
+
+    for dim in dim_names:
+        row = [dim]
+        for arm in _HARD_ARMS:
+            r = results[arm]
+            avg = sum(x.scores.get(dim, 0.0) for x in r) / max(len(r), 1)
+            row.append(f"{avg:.3f}")
+        table.add_row(*row)
+
+    table.add_section()
+    overall_row = ["OVERALL (weighted)"]
+    for arm in _HARD_ARMS:
+        r = results[arm]
+        avg = sum(x.weighted_score for x in r) / max(len(r), 1)
+        overall_row.append(f"{avg:.3f}")
+    table.add_row(*overall_row)
+
+    table.add_section()
+    valid_row = ["Structurally valid"]
+    for arm in _HARD_ARMS:
+        r = results[arm]
+        n = len(r)
+        valid = sum(1 for x in r if x.structural.valid)
+        valid_row.append(f"{valid}/{n} ({valid/max(n, 1):.0%})")
+    table.add_row(*valid_row)
+
+    # These two rows are the actual point of the hard dataset — self-loop
+    # risk and design/logic soundness, not just "does it parse."
+    table.add_section()
+    warn_row = ["Advisory warnings (Layer 2, total)"]
+    for arm in _HARD_ARMS:
+        warn_row.append(str(sum(len(x.structural.warnings) for x in results[arm])))
+    table.add_row(*warn_row)
+
+    sound_row = ["Sound — 0 soundness issues (Layer 3)"]
+    for arm in _HARD_ARMS:
+        reviewed = [x for x in results[arm] if x.soundness_reviewed]
+        sound = sum(1 for x in reviewed if not x.soundness_issues)
+        sound_row.append(f"{sound}/{len(reviewed)}" if reviewed else "n/a")
+    table.add_row(*sound_row)
+
+    console.print(table)
+
+
+def print_qualitative_examples_hard(results: Dict[str, List[EvalResult]], n: int = 5) -> None:
+    """
+    With only 18 scenarios, every disagreement is worth seeing directly —
+    unlike print_qualitative_examples (which only checks one direction to
+    build a monotonic "value of this project" story), this checks both:
+    where custom_rag got right what production got wrong, and vice versa.
+    """
+    production = {r.input.text: r for r in results["production"]}
+    custom_rag = {r.input.text: r for r in results["custom_rag"]}
+
+    rag_wins = [
+        (text, production[text], custom_rag[text]) for text in production
+        if text in custom_rag and not production[text].structural.valid
+        and custom_rag[text].structural.valid
+    ]
+    ka_wins = [
+        (text, production[text], custom_rag[text]) for text in production
+        if text in custom_rag and production[text].structural.valid
+        and not custom_rag[text].structural.valid
+    ]
+
+    if rag_wins:
+        console.rule("[bold green]Custom RAG got right, production KA got wrong[/bold green]")
+        for text, prod_r, rag_r in rag_wins[:n]:
+            console.print(f"\n[bold]Scenario:[/bold] {text[:150]}…")
+            errors = "; ".join(prod_r.structural.errors[:3]) or "(no JSON produced at all)"
+            console.print(f"[red]Production — structural errors:[/red] {errors}")
+            console.print(f"[green]Custom RAG — structurally valid:[/green] {rag_r.structural.valid}")
+
+    if ka_wins:
+        console.rule("[bold yellow]Production KA got right, custom RAG got wrong[/bold yellow]")
+        for text, prod_r, rag_r in ka_wins[:n]:
+            console.print(f"\n[bold]Scenario:[/bold] {text[:150]}…")
+            errors = "; ".join(rag_r.structural.errors[:3]) or "(no JSON produced at all)"
+            console.print(f"[red]Custom RAG — structural errors:[/red] {errors}")
+            console.print(f"[green]Production — structurally valid:[/green] {prod_r.structural.valid}")
+
+    if not rag_wins and not ka_wins:
+        console.print("[yellow]No clean failure/success disagreements between arms — "
+                       "either both succeeded or both failed on every shared scenario.[/yellow]")
+
+
+async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
+    """Entry point for the hard-scenario benchmark notebook."""
+    evaluator = WorkflowEvaluator(config.databricks, cache_dir=str(Path(config.synthetic_data.cache_path).parent))
+    judge = DatabricksJudge(config.databricks, config.judge)
+    dim_names = [d.name for d in config.judge.dimensions]
+
+    results = await run_hard_benchmark(config, evaluator, judge)
+    print_hard_benchmark_report(results, dim_names)
+    print_qualitative_examples_hard(results)
+    return results

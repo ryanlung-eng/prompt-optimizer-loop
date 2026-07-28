@@ -444,6 +444,74 @@ class WorkflowEvaluator:
         self._save_cache()
         return results
 
+    async def run_batch_custom_rag(
+        self,
+        base_instructions: str,
+        inputs: List[SyntheticInput],
+        rag_config,  # RAGConfig, from .rag_retriever — typed loosely to avoid
+                     # a hard import dependency on databricks-ai-search for
+                     # callers that never exercise this path.
+        endpoint_url: Optional[str] = None,
+        use_responses_api: bool = False,
+    ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
+        """
+        Like run_batch, but the system prompt is assembled PER INPUT instead
+        of being one fixed string for the whole batch: base_instructions
+        (frozen — e.g. instructions.md, always injected in full) + retrieved
+        context from rag_config's index for THIS input's own query text.
+        Retrieval genuinely varies per request, so — unlike the rest of this
+        pipeline — one shared prompt can't represent the custom-RAG arm.
+
+        endpoint_url defaults to generation_endpoint (raw Claude, chat-
+        completions) — this arm has no KA endpoint of its own, it's meant to
+        be compared against one (see benchmark_rag_vs_ka.py).
+        """
+        from .rag_retriever import retrieve_context
+
+        endpoint_url = endpoint_url or self._generation_url
+        sem = asyncio.Semaphore(_MAX_CONCURRENT)
+        cache_hits = 0
+
+        async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
+            nonlocal cache_hits
+            # retrieve_context() makes a blocking Databricks SDK call — run it
+            # off the event loop so it doesn't stall the other concurrent slots.
+            retrieved = await asyncio.to_thread(retrieve_context, inp.text, rag_config)
+            system_prompt = (
+                f"{base_instructions}\n\n---\n\nRetrieved reference documentation "
+                f"(top-{rag_config.top_k} most relevant sections for this request — "
+                f"use this as the authoritative source for exact parameter names "
+                f"and node behavior beyond what's already above):\n\n{retrieved}"
+            )
+
+            key = self._cache_key(system_prompt, inp, endpoint_url)
+            cached = self._cache.get(key)
+            if cached is not None:
+                cache_hits += 1
+                return inp, cached["response"], cached["transcript"]
+
+            async with sem:
+                async with httpx.AsyncClient() as client:
+                    try:
+                        response, transcript = await self._run_conversation(
+                            client, system_prompt, inp,
+                            endpoint_url=endpoint_url, use_responses_api=use_responses_api,
+                        )
+                    except Exception as e:
+                        cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
+                        print(f"  Warning: custom-RAG eval failed for '{inp.text[:60]}…': {cause}")
+                        response, transcript = f"[ERROR: {cause}]", []
+                    if not response.startswith("[ERROR:"):
+                        self._cache[key] = {"response": response, "transcript": transcript}
+                        self._save_cache()
+                    return inp, response, transcript
+
+        results = await asyncio.gather(*[bounded_call(inp) for inp in inputs])
+        if cache_hits:
+            print(f"  {cache_hits}/{len(inputs)} conversations served from cache (0 tokens used)")
+        self._save_cache()
+        return results
+
     async def run_multi_prompt_batch(
         self,
         node_prompts: Dict[str, str],

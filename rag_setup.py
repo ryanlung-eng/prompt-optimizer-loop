@@ -2,15 +2,24 @@
 # MAGIC %md
 # MAGIC # RAG Setup — n8n Knowledge Base
 # MAGIC
-# MAGIC One-time (or re-run-when-docs-change) setup notebook. Chunks
-# MAGIC `instructions-digest.md` by section, writes it to a Unity Catalog Delta
-# MAGIC table, then creates a Databricks AI Search endpoint + Delta Sync index over
-# MAGIC it. After this runs, the index is a managed, always-on resource — this
-# MAGIC notebook does NOT need to keep running. Query it at request time via
+# MAGIC One-time (or re-run-when-docs-change) setup notebook. Chunks the
+# MAGIC `knowledge-base-upload/` corpus (59 files, ~129k tokens — the large
+# MAGIC "official skills" corpus, one chunk per file since each is already a
+# MAGIC single topic), writes it to a Unity Catalog Delta table, then creates a
+# MAGIC Databricks AI Search endpoint + Delta Sync index over it. After this runs,
+# MAGIC the index is a managed, always-on resource — this notebook does NOT need
+# MAGIC to keep running. Query it at request time via
 # MAGIC `prompt_optimizer/rag_retriever.py`.
 # MAGIC
+# MAGIC **Deliberately NOT indexing `instructions.md`** — that corpus is only
+# MAGIC ~23.5k tokens, small enough to always-inject in full (frozen, cache-
+# MAGIC breakpointed) rather than retrieve from. Retrieval only earns its
+# MAGIC complexity on a corpus too big to always-inject — see `evaluator.py`'s
+# MAGIC `run_batch_custom_rag()` for how the two combine: frozen `instructions.md`
+# MAGIC + retrieved chunks from this index.
+# MAGIC
 # MAGIC Re-run this notebook (from the "Build source table" cell onward) whenever
-# MAGIC `instructions-digest.md` changes — the Delta Sync index picks up table
+# MAGIC `knowledge-base-upload/` changes — the Delta Sync index picks up table
 # MAGIC changes automatically, no separate re-index step needed.
 
 # COMMAND ----------
@@ -28,7 +37,7 @@ import sys
 
 sys.path.insert(0, "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop")
 
-from prompt_optimizer.kb_chunker import load_and_chunk
+from prompt_optimizer.kb_chunker import chunk_directory_by_file
 
 # COMMAND ----------
 
@@ -38,11 +47,11 @@ from prompt_optimizer.kb_chunker import load_and_chunk
 
 CATALOG = "main"
 SCHEMA = "n8n_kb"
-SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.doc_chunks"
+SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.big_corpus_chunks"
 ENDPOINT_NAME = "n8n-kb-endpoint"
-INDEX_NAME = f"{CATALOG}.{SCHEMA}.doc_chunks_index"
+INDEX_NAME = f"{CATALOG}.{SCHEMA}.big_corpus_chunks_index"
 EMBEDDING_MODEL_ENDPOINT = "databricks-gte-large-en"
-DOC_PATH = "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop/instructions-digest.md"
+KB_DIR = "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop/knowledge-base-upload"
 
 # COMMAND ----------
 
@@ -53,8 +62,8 @@ DOC_PATH = "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop/instruct
 spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 
-chunks = load_and_chunk(DOC_PATH)
-print(f"{len(chunks)} chunks parsed from {DOC_PATH}")
+chunks = chunk_directory_by_file(KB_DIR)
+print(f"{len(chunks)} chunks (one per file) parsed from {KB_DIR}")
 
 rows = [c.to_dict() for c in chunks]
 df = spark.createDataFrame(rows)

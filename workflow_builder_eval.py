@@ -13,7 +13,12 @@
 # MAGIC **Widgets:**
 # MAGIC - `mode`: `evaluate` (score only) | `optimize` (score + improve) | `generate` (synthetic data only)
 # MAGIC - `max_iterations`: override config default
-# MAGIC - `dataset`: `synthetic` (200 trigger×output combos — breadth, hallucination coverage) | `hard` (18 hand-crafted multi-step scenarios in `hard_scenarios.py` — depth, graph-soundness coverage) | `both`
+# MAGIC
+# MAGIC **Dataset**: set directly in the last cell via `dataset_mode` — `synthetic` (200
+# MAGIC trigger×output combos — breadth, hallucination coverage), `hard` (18 hand-crafted
+# MAGIC multi-step scenarios in `hard_scenarios.py` — depth, graph-soundness coverage), or
+# MAGIC `both`. Not a widget, on purpose — it's the kind of thing you want visible as a
+# MAGIC plain line of code, not tucked in a dropdown.
 
 # COMMAND ----------
 
@@ -57,7 +62,6 @@ sys.path.insert(0, "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop"
 
 dbutils.widgets.dropdown("mode", "evaluate", ["evaluate", "optimize", "generate"], "Mode")
 dbutils.widgets.text("max_iterations", "", "Max iterations (blank = use config)")
-dbutils.widgets.dropdown("dataset", "synthetic", ["synthetic", "hard", "both"], "Dataset")
 
 # COMMAND ----------
 
@@ -82,7 +86,11 @@ mode = dbutils.widgets.get("mode")
 max_iter_str = dbutils.widgets.get("max_iterations").strip()
 if max_iter_str:
     cfg.optimizer.max_iterations = int(max_iter_str)
-dataset_mode = dbutils.widgets.get("dataset")
+
+# Which dataset to evaluate against — set this directly, not a widget.
+dataset_mode = "hard"        # only the 18 hand-crafted challenging scenarios
+# dataset_mode = "synthetic"  # the 200 auto-generated trigger×output combos
+# dataset_mode = "both"       # synthetic + hard combined
 
 asyncio.get_event_loop().run_until_complete(run_optimization_loop(
     config=cfg,

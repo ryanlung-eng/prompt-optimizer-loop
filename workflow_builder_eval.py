@@ -13,6 +13,7 @@
 # MAGIC **Widgets:**
 # MAGIC - `mode`: `evaluate` (score only) | `optimize` (score + improve) | `generate` (synthetic data only)
 # MAGIC - `max_iterations`: override config default
+# MAGIC - `dataset`: `synthetic` (200 trigger×output combos — breadth, hallucination coverage) | `hard` (18 hand-crafted multi-step scenarios in `hard_scenarios.py` — depth, graph-soundness coverage) | `both`
 
 # COMMAND ----------
 
@@ -56,6 +57,7 @@ sys.path.insert(0, "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop"
 
 dbutils.widgets.dropdown("mode", "evaluate", ["evaluate", "optimize", "generate"], "Mode")
 dbutils.widgets.text("max_iterations", "", "Max iterations (blank = use config)")
+dbutils.widgets.dropdown("dataset", "synthetic", ["synthetic", "hard", "both"], "Dataset")
 
 # COMMAND ----------
 
@@ -80,9 +82,11 @@ mode = dbutils.widgets.get("mode")
 max_iter_str = dbutils.widgets.get("max_iterations").strip()
 if max_iter_str:
     cfg.optimizer.max_iterations = int(max_iter_str)
+dataset_mode = dbutils.widgets.get("dataset")
 
 asyncio.get_event_loop().run_until_complete(run_optimization_loop(
     config=cfg,
     generate_only=(mode == "generate"),
     evaluate_only=(mode == "evaluate"),
+    dataset_mode=dataset_mode,
 ))

@@ -477,11 +477,28 @@ class WorkflowEvaluator:
             # retrieve_context() makes a blocking Databricks SDK call — run it
             # off the event loop so it doesn't stall the other concurrent slots.
             retrieved = await asyncio.to_thread(retrieve_context, inp.text, rag_config)
+            # _CONVERSATION_EXPR/_USER_ID_EXPR/_TIME_SAVED_EXPR must actually be
+            # present in this template — _run_conversation's self-repair loop
+            # calls _resolve_prompt() on every turn, which only substitutes
+            # these exact placeholder strings. Without them, base_instructions
+            # (a from-scratch rules doc, not config.yaml's original prompt
+            # text) never gets the real request/user id/time-saved injected at
+            # all — the model receives only rules + reference docs with no
+            # indication of what to build, which is exactly why it kept
+            # replying "what would you like me to build?" instead of failing
+            # on bad JSON.
             system_prompt = (
                 f"{base_instructions}\n\n---\n\nRetrieved reference documentation "
                 f"(top-{rag_config.top_k} most relevant sections for this request — "
                 f"use this as the authoritative source for exact parameter names "
                 f"and node behavior beyond what's already above):\n\n{retrieved}"
+                f"\n\n---\n\nConversation:\n{_CONVERSATION_EXPR}\n\n"
+                f"User ID:\n{_USER_ID_EXPR}\n"
+                f"(This is the Slack ID of the person you are building this workflow "
+                f"for. If any outbound send needs an approval-DM recipient, use this "
+                f"ID directly. Never ask the user for their own Slack ID or handle — "
+                f"you already have it.)\n\n"
+                f"Minutes Saved:\n{_TIME_SAVED_EXPR}"
             )
 
             key = self._cache_key(system_prompt, inp, endpoint_url)

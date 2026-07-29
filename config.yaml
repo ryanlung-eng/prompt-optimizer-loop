@@ -131,13 +131,12 @@ rag:
   # Frozen, always-injected core — kept OUTSIDE docs/examples so it's never
   # swept into the retrievable chunk set (see rag_retriever.py's RAGConfig).
   instructions_path: "/Volumes/dev/platform/automation-builder/instructions.md"
-  # Raised from 5/12000: hard-scenario benchmarking showed 5 was too thin
-  # across the merged docs+examples corpus, missing the specific node a query
-  # needed. Ibotta's AI & Automation team's own Databricks RAG bot (HR Bot)
-  # runs unfiltered hybrid retrieval at top-K=10 on a comparable corpus — 8
-  # here is a conservative step toward that, not yet all the way to 10.
-  top_k: 8
-  max_context_chars: 20000
+  # Matches Ibotta's AI & Automation team's own Databricks RAG bot (HR Bot):
+  # unfiltered hybrid retrieval, top-K=10, on a comparable corpus. Dial back
+  # down if 10 turns out to be overkill for a corpus this size — but starting
+  # from their proven value rather than guessing.
+  top_k: 10
+  max_context_chars: 25000
   query_type: "hybrid"     # ANN + keyword (RRF) — Databricks' recommended default
   use_reranker: true
 

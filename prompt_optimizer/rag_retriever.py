@@ -28,13 +28,18 @@ class RAGConfig:
     # the merged docs+examples corpus — a query would miss the one chunk
     # covering the specific node it needed (webhook, Jira update, Trello
     # Trigger), leaving the model to guess and hallucinate params instead of
-    # having the real schema in front of it.
-    top_k: int = 8
+    # having the real schema in front of it. Set to 10 to mirror Ibotta's AI
+    # & Automation team's own HR Bot (unfiltered hybrid retrieval, top-K=10
+    # on a comparable corpus) — dial back down if 10 turns out to be overkill
+    # for a corpus this size, but starting from their proven value rather
+    # than guessing.
+    top_k: int = 10
     # Character budget, not a token budget — see retrieve_context() docstring
-    # for why. ~20000 chars is a conservative ~5000-token ceiling at a ~4
-    # chars/token English-text estimate — raised alongside top_k so the extra
-    # retrieved chunks aren't immediately truncated by the old, tighter budget.
-    max_context_chars: int = 20000
+    # for why. ~25000 chars is a conservative ~6250-token ceiling at a ~4
+    # chars/token English-text estimate — raised alongside top_k=10 so 10
+    # retrieved chunks aren't immediately truncated by a budget sized for the
+    # old top_k=5/8.
+    max_context_chars: int = 25000
     query_type: str = "hybrid"   # ANN + keyword (RRF) — Databricks' recommended default
     use_reranker: bool = True
 

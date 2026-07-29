@@ -163,8 +163,8 @@ def load_config(path: str = "config.yaml") -> Config:
         instructions_path=rag_raw.get(
             "instructions_path", "/Volumes/dev/platform/automation-builder/instructions.md"
         ),
-        top_k=rag_raw.get("top_k", 8),
-        max_context_chars=rag_raw.get("max_context_chars", 20000),
+        top_k=rag_raw.get("top_k", 10),
+        max_context_chars=rag_raw.get("max_context_chars", 25000),
         query_type=rag_raw.get("query_type", "hybrid"),
         use_reranker=rag_raw.get("use_reranker", True),
     )

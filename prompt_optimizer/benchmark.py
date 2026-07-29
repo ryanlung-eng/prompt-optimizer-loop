@@ -244,11 +244,13 @@ async def run_hard_benchmark(
     db = config.databricks
     ka_endpoint = f"{db.workspace_url}/serving-endpoints/{db.eval_endpoint}/invocations"
 
-    instructions_path = Path("instructions.md")
+    instructions_path = Path(config.rag.instructions_path)
     if not instructions_path.exists():
         raise FileNotFoundError(
-            f"instructions.md not found at {instructions_path.resolve()} — the "
-            f"custom-RAG arm needs it as the frozen, always-injected core."
+            f"instructions.md not found at {instructions_path} (config.rag.instructions_path) "
+            f"— the custom-RAG arm needs it as the frozen, always-injected core. "
+            f"Upload it there (outside docs/examples, so it's never swept into the "
+            f"retrievable chunk set) or update rag.instructions_path in config.yaml."
         )
     base_instructions = instructions_path.read_text()
 
@@ -259,6 +261,7 @@ async def run_hard_benchmark(
         enabled=True,
         endpoint_name=config.rag.endpoint_name,
         index_name=config.rag.index_name,
+        instructions_path=config.rag.instructions_path,
         top_k=config.rag.top_k,
         max_context_chars=config.rag.max_context_chars,
         query_type=config.rag.query_type,

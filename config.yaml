@@ -128,6 +128,9 @@ rag:
   enabled: false
   endpoint_name: "n8n-kb-endpoint"
   index_name: "dev.platform.automation_builder_kb_chunks_index"
+  # Frozen, always-injected core — kept OUTSIDE docs/examples so it's never
+  # swept into the retrievable chunk set (see rag_retriever.py's RAGConfig).
+  instructions_path: "/Volumes/dev/platform/automation-builder/instructions.md"
   top_k: 5
   max_context_chars: 12000
   query_type: "hybrid"     # ANN + keyword (RRF) — Databricks' recommended default

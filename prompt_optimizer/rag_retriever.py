@@ -18,6 +18,12 @@ class RAGConfig:
     enabled: bool = False
     endpoint_name: str = "n8n-kb-endpoint"
     index_name: str = "dev.platform.automation_builder_kb_chunks_index"
+    # The frozen, always-injected core (cross-cutting rules) — deliberately
+    # OUTSIDE docs/examples so chunk_directory_by_file's glob never picks it
+    # up as a retrievable chunk. If it lived inside docs/, it would only get
+    # pulled in when it happens to rank in a query's top-K, defeating the
+    # point of having a guaranteed-present core.
+    instructions_path: str = "/Volumes/dev/platform/automation-builder/instructions.md"
     top_k: int = 5
     # Character budget, not a token budget — see retrieve_context() docstring
     # for why. ~12000 chars is a conservative ~3000-token ceiling at a ~4

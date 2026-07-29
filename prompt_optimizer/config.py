@@ -160,6 +160,9 @@ def load_config(path: str = "config.yaml") -> Config:
         enabled=rag_raw.get("enabled", False),
         endpoint_name=rag_raw.get("endpoint_name", "n8n-kb-endpoint"),
         index_name=rag_raw.get("index_name", "dev.platform.automation_builder_kb_chunks_index"),
+        instructions_path=rag_raw.get(
+            "instructions_path", "/Volumes/dev/platform/automation-builder/instructions.md"
+        ),
         top_k=rag_raw.get("top_k", 5),
         max_context_chars=rag_raw.get("max_context_chars", 12000),
         query_type=rag_raw.get("query_type", "hybrid"),

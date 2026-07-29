@@ -4,11 +4,12 @@
 # MAGIC
 # MAGIC One notebook, two phases:
 # MAGIC
-# MAGIC 1. **Setup** (same as `rag_setup.py`) — chunks `knowledge-base-upload/`
-# MAGIC    (59 files, ~129k tokens, one chunk per file), writes it to a Unity
-# MAGIC    Catalog Delta table, and creates the Databricks AI Search endpoint +
-# MAGIC    Delta Sync index over it. Safe to re-run — creation is skipped (and a
-# MAGIC    sync triggered instead) if the endpoint/index already exist.
+# MAGIC 1. **Setup** (same as `rag_setup.py`) — chunks the `docs/` and
+# MAGIC    `examples/` folders in the existing `dev.platform.automation-builder`
+# MAGIC    Unity Catalog volume (one chunk per file), writes it to a Delta table,
+# MAGIC    and creates the Databricks AI Search endpoint + Delta Sync index over
+# MAGIC    it. Safe to re-run — creation is skipped (and a sync triggered
+# MAGIC    instead) if the endpoint/index already exist.
 # MAGIC 2. **Benchmark** (same as `benchmark_rag_vs_ka.py`) — compares the
 # MAGIC    production Knowledge Assistant endpoint against the new custom RAG
 # MAGIC    pipeline (frozen `instructions.md` + retrieval over the index from
@@ -16,10 +17,9 @@
 # MAGIC    judge/validator as the rest of the eval pipeline.
 # MAGIC
 # MAGIC `instructions.md` itself is NOT indexed — at ~23.5k tokens it's small
-# MAGIC enough to always-inject in full rather than retrieve from; only
-# MAGIC `knowledge-base-upload/` (too big to always-inject) goes through
-# MAGIC retrieval. See `evaluator.py`'s `run_batch_custom_rag()` for how the two
-# MAGIC combine.
+# MAGIC enough to always-inject in full rather than retrieve from; only the
+# MAGIC docs/examples corpus (too big to always-inject) goes through retrieval.
+# MAGIC See `evaluator.py`'s `run_batch_custom_rag()` for how the two combine.
 
 # COMMAND ----------
 
@@ -68,21 +68,27 @@ os.environ["DATABRICKS_TOKEN"] = _ctx.apiToken().get()
 
 from prompt_optimizer.kb_chunker import chunk_directory_by_file
 
-CATALOG = "main"
-SCHEMA = "n8n_kb"
-SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.big_corpus_chunks"
+# dev.platform already exists (and the docs are already uploaded to the
+# automation-builder volume there) — no CREATE CATALOG/SCHEMA needed, and no
+# permission for it anyway. Table name is scoped with the automation_builder_
+# prefix since platform is a shared schema other tables may already live in.
+CATALOG = "dev"
+SCHEMA = "platform"
+SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.automation_builder_kb_chunks"
 ENDPOINT_NAME = "n8n-kb-endpoint"
-INDEX_NAME = f"{CATALOG}.{SCHEMA}.big_corpus_chunks_index"
+INDEX_NAME = f"{CATALOG}.{SCHEMA}.automation_builder_kb_chunks_index"
 EMBEDDING_MODEL_ENDPOINT = "databricks-gte-large-en"
-KB_DIR = "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop/knowledge-base-upload"
+DOCS_DIR = "/Volumes/dev/platform/automation-builder/docs"
+EXAMPLES_DIR = "/Volumes/dev/platform/automation-builder/examples"
 
 # COMMAND ----------
 
-# spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
-# spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
-
-chunks = chunk_directory_by_file(KB_DIR)
-print(f"{len(chunks)} chunks (one per file) parsed from {KB_DIR}")
+# Merged into one table/index — id_prefix keeps the two sources' IDs from
+# colliding (both would otherwise restart numbering at 000).
+doc_chunks = chunk_directory_by_file(DOCS_DIR, id_prefix="docs")
+example_chunks = chunk_directory_by_file(EXAMPLES_DIR, id_prefix="examples")
+chunks = doc_chunks + example_chunks
+print(f"{len(doc_chunks)} chunks from {DOCS_DIR}, {len(example_chunks)} from {EXAMPLES_DIR}, {len(chunks)} total")
 
 rows = [c.to_dict() for c in chunks]
 df = spark.createDataFrame(rows)

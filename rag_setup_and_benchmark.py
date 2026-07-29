@@ -6,10 +6,12 @@
 # MAGIC
 # MAGIC 1. **Setup** (same as `rag_setup.py`) — chunks the `docs/` and
 # MAGIC    `examples/` folders in the existing `dev.platform.automation-builder`
-# MAGIC    Unity Catalog volume (one chunk per file), writes it to a Delta table,
-# MAGIC    and creates the Databricks AI Search endpoint + Delta Sync index over
-# MAGIC    it. Safe to re-run — creation is skipped (and a sync triggered
-# MAGIC    instead) if the endpoint/index already exist.
+# MAGIC    Unity Catalog volume, structure-aware: each file splits on its own
+# MAGIC    internal `## ` headers (one node/topic per chunk) when it has any,
+# MAGIC    rather than always embedding a whole multi-topic file as one vector.
+# MAGIC    Writes to a Delta table, and creates the Databricks AI Search endpoint
+# MAGIC    + Delta Sync index over it. Safe to re-run — creation is skipped (and
+# MAGIC    a sync triggered instead) if the endpoint/index already exist.
 # MAGIC 2. **Benchmark** (same as `benchmark_rag_vs_ka.py`) — compares the
 # MAGIC    production Knowledge Assistant endpoint against the new custom RAG
 # MAGIC    pipeline (frozen `instructions.md` + retrieval over the index from

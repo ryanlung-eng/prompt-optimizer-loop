@@ -3,13 +3,17 @@
 # MAGIC # RAG Setup — n8n Knowledge Base
 # MAGIC
 # MAGIC One-time (or re-run-when-docs-change) setup notebook. Chunks the
-# MAGIC `knowledge-base-upload/` corpus (59 files, ~129k tokens — the large
-# MAGIC "official skills" corpus, one chunk per file since each is already a
-# MAGIC single topic), writes it to a Unity Catalog Delta table, then creates a
-# MAGIC Databricks AI Search endpoint + Delta Sync index over it. After this runs,
-# MAGIC the index is a managed, always-on resource — this notebook does NOT need
-# MAGIC to keep running. Query it at request time via
-# MAGIC `prompt_optimizer/rag_retriever.py`.
+# MAGIC `docs/` and `examples/` folders in the `dev.platform.automation-builder`
+# MAGIC volume — structure-aware: each file is split on its own internal `## `
+# MAGIC headers (one node/topic per chunk) when it has any, falling back to
+# MAGIC whole-file only for files with no internal headers. Splitting within
+# MAGIC files matters — several files cover 15-20+ distinct node types each, and
+# MAGIC embedding the whole file as one vector dilutes it enough that the exact
+# MAGIC node a query needs can still miss the top-K. Writes the chunks to a Unity
+# MAGIC Catalog Delta table, then creates a Databricks AI Search endpoint + Delta
+# MAGIC Sync index over it. After this runs, the index is a managed, always-on
+# MAGIC resource — this notebook does NOT need to keep running. Query it at
+# MAGIC request time via `prompt_optimizer/rag_retriever.py`.
 # MAGIC
 # MAGIC **Deliberately NOT indexing `instructions.md`** — that corpus is only
 # MAGIC ~23.5k tokens, small enough to always-inject in full (frozen, cache-

@@ -24,12 +24,17 @@ class RAGConfig:
     # pulled in when it happens to rank in a query's top-K, defeating the
     # point of having a guaranteed-present core.
     instructions_path: str = "/Volumes/dev/platform/automation-builder/instructions.md"
-    top_k: int = 5
+    # Raised from 5: hard-scenario benchmarking showed 5 was too thin across
+    # the merged docs+examples corpus — a query would miss the one chunk
+    # covering the specific node it needed (webhook, Jira update, Trello
+    # Trigger), leaving the model to guess and hallucinate params instead of
+    # having the real schema in front of it.
+    top_k: int = 8
     # Character budget, not a token budget — see retrieve_context() docstring
-    # for why. ~12000 chars is a conservative ~3000-token ceiling at a ~4
-    # chars/token English-text estimate, leaving headroom rather than cutting
-    # it close.
-    max_context_chars: int = 12000
+    # for why. ~20000 chars is a conservative ~5000-token ceiling at a ~4
+    # chars/token English-text estimate — raised alongside top_k so the extra
+    # retrieved chunks aren't immediately truncated by the old, tighter budget.
+    max_context_chars: int = 20000
     query_type: str = "hybrid"   # ANN + keyword (RRF) — Databricks' recommended default
     use_reranker: bool = True
 

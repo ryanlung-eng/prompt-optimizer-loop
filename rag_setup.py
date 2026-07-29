@@ -130,6 +130,27 @@ except Exception as e:
 
 # COMMAND ----------
 
+# MAGIC %md ## Wait for the index to come online
+# MAGIC A freshly created index needs to provision the endpoint compute and embed
+# MAGIC every row before it's queryable — Databricks' own docs say to expect this
+# MAGIC to take several minutes. `BadRequest: ... is not ready` right after
+# MAGIC creation is this, not a real error; this cell polls until it's done
+# MAGIC instead of guessing when to re-run.
+
+# COMMAND ----------
+
+import time
+
+while True:
+    state = index.describe().get("status", {}).get("detailed_state", "")
+    if state.startswith("ONLINE"):
+        print("Index is ONLINE")
+        break
+    print(f"Waiting for index to be ONLINE (currently: {state or 'unknown'})…")
+    time.sleep(15)
+
+# COMMAND ----------
+
 # MAGIC %md ## Smoke test
 
 # COMMAND ----------

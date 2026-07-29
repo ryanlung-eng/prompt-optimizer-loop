@@ -19,29 +19,33 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
 
+from . import rag_retriever as _rag_retriever_module
 from . import validator as _validator_module
 from .config import DatabricksConfig
 from .synthetic_data import SyntheticInput
 from .validator import validate_workflow_json
 
-# Hashes THIS file's own source, validator.py's, AND check_params.js's — all
-# three directly determine how a conversation plays out (self-repair trigger
-# logic, what counts as "valid"), not just the prompt text. Baked into the
-# cache key below so any change here automatically invalidates stale cached
-# conversations, instead of relying on remembering to bump a version number
-# by hand. check_params.js is invoked via subprocess rather than imported,
-# so it's easy to forget — exactly what happened here: three straight
-# hallucination-detection bug fixes to it never invalidated the cache at
-# all, because only the two .py files were being hashed. That let stale
-# multi-turn transcripts (generated back when check_params.js was still
-# feeding the KA bogus "invalid parameter" errors during self-repair) keep
-# getting served and re-scored by the judge, making old, already-fixed bugs
-# look like they were still happening.
+# Hashes THIS file's own source, validator.py's, check_params.js's, AND
+# rag_retriever.py's — all directly determine how a conversation plays out
+# (self-repair trigger logic, what counts as "valid", and — for the custom-
+# RAG arm — what retrieve_context() actually fetches: top_k,
+# max_context_chars, query_type all live in rag_retriever.py, not just the
+# live index content). Baked into the cache key below so any change here
+# automatically invalidates stale cached conversations, instead of relying on
+# remembering to bump a version number or clear the cache by hand.
+# check_params.js is invoked via subprocess rather than imported, so it's
+# easy to forget — exactly what happened here: three straight hallucination-
+# detection bug fixes to it never invalidated the cache at all, because only
+# the two .py files were being hashed at the time. Same class of bug nearly
+# repeated with rag_retriever.py — a top_k/budget tuning change alone doesn't
+# necessarily change the resolved system_prompt text enough to guarantee a
+# cache miss, so it needs to be hashed explicitly too, not left to chance.
 _LOGIC_VERSION = hashlib.sha256(
     (
         Path(__file__).read_text()
         + Path(_validator_module.__file__).read_text()
         + _validator_module._SCHEMA_CHECK_SCRIPT.read_text()
+        + Path(_rag_retriever_module.__file__).read_text()
     ).encode()
 ).hexdigest()[:16]
 

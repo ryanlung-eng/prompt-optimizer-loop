@@ -424,10 +424,25 @@ class WorkflowEvaluator:
                 if structural.valid or last_turn:
                     return response, transcript
                 error_text = "; ".join(structural.errors)
+                # "Can you fix it and send the corrected JSON?" left room for
+                # the model to diagnose the error in prose first — observed
+                # directly in real transcripts ("The core issue is that the
+                # validator treats...", multiple paragraphs of reasoning
+                # before the JSON even starts). That prose eats into the
+                # fixed max_tokens=6000 completion budget, and several
+                # "Invalid JSON: Expecting ',' delimiter" / "Extra data"
+                # parse errors on repair turns are consistent with the JSON
+                # itself getting cut off mid-generation as a result. Telling
+                # the model explicitly to skip the diagnosis reclaims that
+                # budget for the actual output.
                 reply = (
                     f"That didn't work — I tried to import it and got these "
-                    f"errors: {error_text}. Can you fix it and send the "
-                    f"corrected workflow JSON?"
+                    f"errors: {error_text}. Output ONLY the corrected "
+                    f"workflow JSON — start your reply immediately with '{{' "
+                    f"and end with '}}'. Do not diagnose the error, explain "
+                    f"your reasoning, or write any prose before or after the "
+                    f"JSON; every token spent explaining is a token not spent "
+                    f"on the workflow itself."
                 )
                 if retrieve_on_repair is not None:
                     extra = await retrieve_on_repair(error_text)

@@ -217,17 +217,22 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 
 # --------------------------------------------------------------------- #
 # Hard-scenario benchmark: production KA endpoint vs. the custom RAG     #
-# pipeline (frozen instructions.md + retrieval over knowledge-base-      #
-# upload/) — a harder, more realistic comparison than the 3-arm one      #
-# above, since it uses the Layer 4 hand-crafted scenarios (self-loops,   #
-# unwired sub-nodes, multi-hop chains) instead of the easier trigger×    #
-# output synthetic set.                                                  #
+# pipeline (the IDENTICAL production prompt from config.yaml, plus       #
+# retrieval over knowledge-base-upload/ spliced in) — a harder, more      #
+# realistic comparison than the 3-arm one above, since it uses the       #
+# Layer 4 hand-crafted scenarios (self-loops, unwired sub-nodes,          #
+# multi-hop chains) instead of the easier trigger×output synthetic set.  #
+# Using the same prompt text as production means retrieval quality is    #
+# the ONLY variable between the two arms — everything else (rules,       #
+# credentials list, approval pattern, output-format CRITICALs) is        #
+# identical, so a score difference can't be explained away as "well, the #
+# prompts weren't the same to begin with."                               #
 # --------------------------------------------------------------------- #
 
 _HARD_ARMS = ["production", "custom_rag"]
 _HARD_ARM_LABELS = {
     "production": "Production (KA endpoint)",
-    "custom_rag": "Custom RAG (frozen instructions.md + retrieved big-corpus context)",
+    "custom_rag": "Custom RAG (same prompt + retrieved big-corpus context)",
 }
 
 
@@ -244,15 +249,11 @@ async def run_hard_benchmark(
     db = config.databricks
     ka_endpoint = f"{db.workspace_url}/serving-endpoints/{db.eval_endpoint}/invocations"
 
-    instructions_path = Path(config.rag.instructions_path)
-    if not instructions_path.exists():
-        raise FileNotFoundError(
-            f"instructions.md not found at {instructions_path} (config.rag.instructions_path) "
-            f"— the custom-RAG arm needs it as the frozen, always-injected core. "
-            f"Upload it there (outside docs/examples, so it's never swept into the "
-            f"retrievable chunk set) or update rag.instructions_path in config.yaml."
-        )
-    base_instructions = instructions_path.read_text()
+    # Same prompt text production receives (see run_batch_custom_rag's seam-
+    # splice branch) — NOT instructions.md, so this arm isolates retrieval
+    # quality as the only difference from production rather than also
+    # confounding it with a different rules document.
+    base_instructions = base_prompt
 
     # Override enabled=True regardless of config.yaml's rag.enabled — running
     # this benchmark IS the point, independent of whether the main eval loop

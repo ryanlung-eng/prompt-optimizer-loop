@@ -460,11 +460,22 @@ class WorkflowEvaluator:
     ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
         """
         Like run_batch, but the system prompt is assembled PER INPUT instead
-        of being one fixed string for the whole batch: base_instructions
-        (frozen — e.g. instructions.md, always injected in full) + retrieved
-        context from rag_config's index for THIS input's own query text.
-        Retrieval genuinely varies per request, so — unlike the rest of this
-        pipeline — one shared prompt can't represent the custom-RAG arm.
+        of being one fixed string for the whole batch: base_instructions +
+        retrieved context from rag_config's index for THIS input's own query
+        text. Retrieval genuinely varies per request, so — unlike the rest of
+        this pipeline — one shared prompt can't represent the custom-RAG arm.
+
+        base_instructions can be either:
+          - a frozen rules doc with no placeholders of its own (e.g.
+            instructions.md) — retrieved context + the Conversation/User ID/
+            Minutes Saved trailer are appended after it.
+          - a fully-formed prompt that already embeds _CONVERSATION_EXPR/
+            _USER_ID_EXPR/_TIME_SAVED_EXPR inline and has its own "\\n\\n---\\n\\n"
+            seam (e.g. config.yaml's production prompt, used as-is to make an
+            arm directly comparable to production — the ONLY difference from
+            what production receives is the extra retrieved-context block
+            spliced in at that seam) — retrieved context is spliced in at the
+            first such seam instead, so the placeholders aren't duplicated.
 
         endpoint_url defaults to generation_endpoint (raw Claude, chat-
         completions) — this arm has no KA endpoint of its own, it's meant to
@@ -481,29 +492,47 @@ class WorkflowEvaluator:
             # retrieve_context() makes a blocking Databricks SDK call — run it
             # off the event loop so it doesn't stall the other concurrent slots.
             retrieved = await asyncio.to_thread(retrieve_context, inp.text, rag_config)
-            # _CONVERSATION_EXPR/_USER_ID_EXPR/_TIME_SAVED_EXPR must actually be
-            # present in this template — _run_conversation's self-repair loop
-            # calls _resolve_prompt() on every turn, which only substitutes
-            # these exact placeholder strings. Without them, base_instructions
-            # (a from-scratch rules doc, not config.yaml's original prompt
-            # text) never gets the real request/user id/time-saved injected at
-            # all — the model receives only rules + reference docs with no
-            # indication of what to build, which is exactly why it kept
-            # replying "what would you like me to build?" instead of failing
-            # on bad JSON.
-            system_prompt = (
-                f"{base_instructions}\n\n---\n\nRetrieved reference documentation "
-                f"(top-{rag_config.top_k} most relevant sections for this request — "
-                f"use this as the authoritative source for exact parameter names "
-                f"and node behavior beyond what's already above):\n\n{retrieved}"
-                f"\n\n---\n\nConversation:\n{_CONVERSATION_EXPR}\n\n"
-                f"User ID:\n{_USER_ID_EXPR}\n"
-                f"(This is the Slack ID of the person you are building this workflow "
-                f"for. If any outbound send needs an approval-DM recipient, use this "
-                f"ID directly. Never ask the user for their own Slack ID or handle — "
-                f"you already have it.)\n\n"
-                f"Minutes Saved:\n{_TIME_SAVED_EXPR}"
+            retrieved_block = (
+                f"Retrieved reference documentation (top-{rag_config.top_k} most "
+                f"relevant sections for this request — use this as the authoritative "
+                f"source for exact parameter names and node behavior beyond what's "
+                f"already above):\n\n{retrieved}"
             )
+            # _CONVERSATION_EXPR/_USER_ID_EXPR/_TIME_SAVED_EXPR must end up
+            # present exactly once in the resolved template — _run_conversation's
+            # self-repair loop calls _resolve_prompt() on every turn, which
+            # substitutes these exact placeholder strings wherever they occur.
+            _seam = "\n\n---\n\n"
+            if _CONVERSATION_EXPR in base_instructions and _seam in base_instructions:
+                # base_instructions is a fully-formed prompt that already embeds
+                # the placeholders inline (e.g. config.yaml's production prompt,
+                # used here to make this arm directly comparable to production —
+                # same rules/credentials/approval-pattern text, retrieval is the
+                # only variable). Splice the retrieved block in at the prompt's
+                # own existing seam rather than appending a second, duplicate
+                # trailer after it.
+                seam_idx = base_instructions.index(_seam)
+                system_prompt = (
+                    base_instructions[:seam_idx] + _seam + retrieved_block + _seam
+                    + base_instructions[seam_idx + len(_seam):]
+                )
+            else:
+                # base_instructions is a frozen rules doc with no placeholders of
+                # its own (e.g. instructions.md) — without appending them here,
+                # the model receives only rules + reference docs with no
+                # indication of what to build (previously produced replies like
+                # "what would you like me to build?" instead of failing on bad
+                # JSON).
+                system_prompt = (
+                    f"{base_instructions}\n\n---\n\n{retrieved_block}"
+                    f"\n\n---\n\nConversation:\n{_CONVERSATION_EXPR}\n\n"
+                    f"User ID:\n{_USER_ID_EXPR}\n"
+                    f"(This is the Slack ID of the person you are building this workflow "
+                    f"for. If any outbound send needs an approval-DM recipient, use this "
+                    f"ID directly. Never ask the user for their own Slack ID or handle — "
+                    f"you already have it.)\n\n"
+                    f"Minutes Saved:\n{_TIME_SAVED_EXPR}"
+                )
 
             key = self._cache_key(system_prompt, inp, endpoint_url)
             cached = self._cache.get(key)

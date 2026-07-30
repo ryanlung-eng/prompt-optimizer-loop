@@ -14,7 +14,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 import httpx
 from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
@@ -315,6 +315,7 @@ class WorkflowEvaluator:
     async def _run_conversation(
         self, client: httpx.AsyncClient, system_prompt: str, inp: SyntheticInput,
         endpoint_url: Optional[str] = None, use_responses_api: bool = True,
+        retrieve_on_repair: Optional[Callable[[str], Awaitable[str]]] = None,
     ) -> Tuple[str, List[dict]]:
         """
         Runs the KA up to _MAX_TURNS times, answering clarifying questions with
@@ -342,6 +343,19 @@ class WorkflowEvaluator:
         fed back as the next turn ("that didn't parse — here's why — please
         fix it"), giving the model a targeted chance to correct itself
         instead of us silently accepting broken JSON as the end result.
+
+        retrieve_on_repair (custom-RAG arm only — None for production, so its
+        behavior is unchanged): system_prompt's retrieved context is fixed at
+        conversation start, computed from the ORIGINAL request text alone. A
+        repair turn's error is often about a specific node/param that first
+        query's top-K never happened to surface (e.g. request was about a
+        Slack flow, but the actual bug is a Jira field) — with no new
+        information entering the loop, the model just re-guesses against the
+        same context for every remaining turn. When provided, this is called
+        with the joined validation-error text on each repair turn, and its
+        return value (a second, error-targeted retrieval) is appended to that
+        turn's reply so the model has a real chance to fix the SPECIFIC thing
+        that broke, not just retry blind.
         """
         endpoint_url = endpoint_url or self._endpoint_url
         conversation = f"User: {inp.text}"
@@ -373,11 +387,19 @@ class WorkflowEvaluator:
             if structural.is_json:
                 if structural.valid or last_turn:
                     return response, transcript
+                error_text = "; ".join(structural.errors)
                 reply = (
-                    "That didn't work — I tried to import it and got these "
-                    f"errors: {'; '.join(structural.errors)}. Can you fix it "
-                    "and send the corrected workflow JSON?"
+                    f"That didn't work — I tried to import it and got these "
+                    f"errors: {error_text}. Can you fix it and send the "
+                    f"corrected workflow JSON?"
                 )
+                if retrieve_on_repair is not None:
+                    extra = await retrieve_on_repair(error_text)
+                    if extra:
+                        reply += (
+                            "\n\nAdditional reference documentation that may "
+                            f"help fix this specific error:\n\n{extra}"
+                        )
             elif last_turn:
                 return response, transcript
             else:
@@ -477,15 +499,34 @@ class WorkflowEvaluator:
             spliced in at that seam) — retrieved context is spliced in at the
             first such seam instead, so the placeholders aren't duplicated.
 
-        endpoint_url defaults to generation_endpoint (raw Claude, chat-
-        completions) — this arm has no KA endpoint of its own, it's meant to
-        be compared against one (see benchmark_rag_vs_ka.py).
+        endpoint_url defaults to rag_config.generation_endpoint (raw Claude,
+        chat-completions — Sonnet unless overridden in config.yaml, e.g. to
+        try Opus) — this arm has no KA endpoint of its own, it's meant to be
+        compared against one (see benchmark_rag_vs_ka.py). Previously
+        defaulted to self._generation_url (fast_generation_endpoint / Haiku)
+        by accident — every custom-RAG benchmark run before this fix was
+        generating on Haiku, not a model comparable to production's.
         """
+        from dataclasses import replace as _dc_replace
+
         from .rag_retriever import retrieve_context
 
-        endpoint_url = endpoint_url or self._generation_url
+        endpoint_url = endpoint_url or (
+            f"{self._config.workspace_url}/serving-endpoints/"
+            f"{rag_config.generation_endpoint}/invocations"
+        )
         sem = asyncio.Semaphore(_MAX_CONCURRENT)
         cache_hits = 0
+
+        # Repair-turn retrieval uses a smaller budget than the initial
+        # retrieval — it's meant to fetch a couple of targeted chunks for one
+        # specific validation error, not re-ground the whole request. Without
+        # this cap, up to _MAX_TURNS-1 repair turns could each append a full
+        # top-K context block to the ever-growing `conversation` string.
+        _repair_rag_config = _dc_replace(rag_config, top_k=3, max_context_chars=4000)
+
+        async def _retrieve_on_repair(error_text: str) -> str:
+            return await asyncio.to_thread(retrieve_context, error_text, _repair_rag_config)
 
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
             nonlocal cache_hits
@@ -546,6 +587,7 @@ class WorkflowEvaluator:
                         response, transcript = await self._run_conversation(
                             client, system_prompt, inp,
                             endpoint_url=endpoint_url, use_responses_api=use_responses_api,
+                            retrieve_on_repair=_retrieve_on_repair,
                         )
                     except Exception as e:
                         cause = e.last_attempt.exception() if isinstance(e, RetryError) else e

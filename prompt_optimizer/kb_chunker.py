@@ -16,6 +16,17 @@ from typing import List
 
 _SECTION_RE = re.compile(r"^## (.+)$", re.MULTILINE)
 
+# Adjacent header-sections within the same file are merged forward until the
+# running chunk reaches this size — raised from pure per-header splitting
+# (median ~750 chars) because several sections are individually short enough
+# (e.g. a two-line "Notes" or "Gotchas" sub-point) that shipping them as their
+# own standalone chunk wastes a retrieval slot on very little content. Only
+# raises the FLOOR, not the ceiling: a section that's already at or above this
+# size ships on its own, unmerged — the original dilution problem this file
+# was written to fix (one chunk per file covering 15-20+ node types) stays
+# fixed, since large sections are never forced together.
+_MIN_CHUNK_CHARS = 1000
+
 
 @dataclass
 class DocChunk:
@@ -23,6 +34,9 @@ class DocChunk:
     section_number: int  # 0 for unnumbered sections (e.g. "Non-negotiables")
     title: str          # e.g. "Gmail"
     text: str           # full section body, including the "## Title" line
+    source: str = ""    # originating file stem, e.g. "n8nNodeCatalog-utility" —
+                         # used by rag_retriever.py to cap how many of a
+                         # single query's top-K results can come from one file
 
     def to_dict(self) -> dict:
         return {
@@ -30,6 +44,7 @@ class DocChunk:
             "section_number": self.section_number,
             "title": self.title,
             "text": self.text,
+            "source": self.source,
         }
 
 
@@ -64,6 +79,40 @@ def _split_sections(markdown_text: str) -> List[dict]:
             title = raw_title
         sections.append({"title": title, "text": section_text})
     return sections
+
+
+def _merge_small_sections(sections: List[dict], min_chars: int) -> List[dict]:
+    """
+    Merges consecutive sections (in file order) into a running buffer until it
+    reaches min_chars, then ships it as one chunk with a combined title. A
+    section already >= min_chars on its own is never merged with a neighbor —
+    this only raises the floor on how small a chunk can be, never forces large
+    sections together. Any small leftover at the end of the file (nothing left
+    to merge forward into) is folded into the previous chunk instead of
+    shipping as an undersized orphan; if the file has no prior chunk either
+    (the whole file was small), it ships as-is.
+    """
+    merged: List[dict] = []
+    buf_titles: List[str] = []
+    buf_texts: List[str] = []
+    buf_len = 0
+
+    for sec in sections:
+        buf_titles.append(sec["title"])
+        buf_texts.append(sec["text"])
+        buf_len += len(sec["text"])
+        if buf_len >= min_chars:
+            merged.append({"title": " / ".join(buf_titles), "text": "\n\n".join(buf_texts)})
+            buf_titles, buf_texts, buf_len = [], [], 0
+
+    if buf_texts:
+        if merged:
+            merged[-1]["title"] += " / " + " / ".join(buf_titles)
+            merged[-1]["text"] += "\n\n" + "\n\n".join(buf_texts)
+        else:
+            merged.append({"title": " / ".join(buf_titles), "text": "\n\n".join(buf_texts)})
+
+    return merged
 
 
 def chunk_markdown_by_section(markdown_text: str) -> List[DocChunk]:
@@ -125,11 +174,12 @@ def chunk_directory_by_file(dir_path: str, id_prefix: str = "") -> List[DocChunk
                 section_number=counter,
                 title=file_label,
                 text=text,
+                source=path.stem,
             ))
             counter += 1
             continue
 
-        for sec in sections:
+        for sec in _merge_small_sections(sections, _MIN_CHUNK_CHARS):
             # Prefix the chunk title with the source file for context (a
             # bare "Webhook Trigger" title loses which doc family it's from
             # when several files could plausibly have a section with that
@@ -140,6 +190,7 @@ def chunk_directory_by_file(dir_path: str, id_prefix: str = "") -> List[DocChunk
                 section_number=counter,
                 title=title,
                 text=sec["text"],
+                source=path.stem,
             ))
             counter += 1
 

@@ -163,7 +163,7 @@ while True:
 
 results = index.similarity_search(
     query_text="how do I avoid a Slack bot replying to its own messages",
-    columns=["id", "title", "text"],
+    columns=["id", "title", "text", "source"],
     num_results=3,
 )
 for r in results["result"]["data_array"]:

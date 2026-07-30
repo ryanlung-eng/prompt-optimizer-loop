@@ -42,6 +42,26 @@ class RAGConfig:
     max_context_chars: int = 25000
     query_type: str = "hybrid"   # ANN + keyword (RRF) — Databricks' recommended default
     use_reranker: bool = True
+    # Generation model for the custom-RAG arm specifically — deliberately
+    # separate from DatabricksConfig.generation_endpoint/fast_generation_endpoint
+    # (which serve prompt-optimization and simulated-user replies respectively)
+    # so this can be swapped per-run (e.g. to an Opus endpoint) via config.yaml
+    # alone, without touching code. Was previously silently defaulting to
+    # WorkflowEvaluator._generation_url (Haiku, fast_generation_endpoint) —
+    # every custom-RAG benchmark run before this field existed was generating
+    # on Haiku, not Sonnet.
+    generation_endpoint: str = "databricks-claude-sonnet-4-6"
+    # Retrieval-time diversity cap: at most this many of the top_k results may
+    # come from the same source document. Without this, one large file that
+    # scores well overall for a broad query can fill most/all of the top-K
+    # slots, starving coverage of other relevant docs — e.g. a big node-
+    # catalog file crowding out the one chunk from a different file that
+    # actually covers the specific integration a request needs.
+    max_chunks_per_source: int = 4
+    # How many raw candidates to fetch before applying the per-source cap —
+    # needs to comfortably exceed top_k so there's still enough of a pool left
+    # to fill top_k slots after over-represented sources get capped.
+    over_fetch_multiplier: int = 3
 
 
 @dataclass
@@ -49,6 +69,7 @@ class RetrievedChunk:
     id: str
     title: str
     text: str
+    source: str
 
 
 def _get_index(config: RAGConfig):
@@ -58,13 +79,21 @@ def _get_index(config: RAGConfig):
 
 
 def retrieve_chunks(query_text: str, config: RAGConfig = RAGConfig()) -> List[RetrievedChunk]:
-    """Raw top-K retrieval, ranked best-first by similarity_search — no budget trimming."""
+    """
+    Top-K retrieval, ranked best-first by similarity_search, with a per-source
+    diversity cap applied afterward: fetches top_k * over_fetch_multiplier raw
+    candidates, then greedily keeps rank order while skipping any candidate
+    whose source has already hit max_chunks_per_source, stopping once top_k
+    slots are filled (or candidates run out — a query where one source
+    legitimately dominates every relevant result just returns fewer than
+    top_k rather than backfilling with irrelevant filler).
+    """
     index = _get_index(config)
 
     kwargs = dict(
         query_text=query_text,
-        columns=["id", "title", "text"],
-        num_results=config.top_k,
+        columns=["id", "title", "text", "source"],
+        num_results=config.top_k * config.over_fetch_multiplier,
         query_type=config.query_type,
     )
     if config.use_reranker:
@@ -73,7 +102,18 @@ def retrieve_chunks(query_text: str, config: RAGConfig = RAGConfig()) -> List[Re
 
     results = index.similarity_search(**kwargs)
     rows = results["result"]["data_array"]
-    return [RetrievedChunk(id=r[0], title=r[1], text=r[2]) for r in rows]
+    ranked = [RetrievedChunk(id=r[0], title=r[1], text=r[2], source=r[3]) for r in rows]
+
+    selected: List[RetrievedChunk] = []
+    per_source_count: dict = {}
+    for c in ranked:
+        if per_source_count.get(c.source, 0) >= config.max_chunks_per_source:
+            continue
+        selected.append(c)
+        per_source_count[c.source] = per_source_count.get(c.source, 0) + 1
+        if len(selected) >= config.top_k:
+            break
+    return selected
 
 
 def retrieve_context(query_text: str, config: RAGConfig = RAGConfig()) -> str:

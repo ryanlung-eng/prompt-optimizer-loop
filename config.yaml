@@ -138,6 +138,20 @@ rag:
   max_context_chars: 25000
   query_type: "hybrid"     # ANN + keyword (RRF) — Databricks' recommended default
   use_reranker: true
+  # Generation model for the custom-RAG arm specifically (separate from
+  # databricks.generation_endpoint/fast_generation_endpoint below, which serve
+  # prompt optimization and simulated-user replies) — was previously silently
+  # defaulting to fast_generation_endpoint (Haiku); every custom-RAG benchmark
+  # run before this field existed was generating on Haiku, not Sonnet. Swap
+  # this to try a different model (e.g. an Opus serving endpoint) without
+  # touching code.
+  generation_endpoint: "databricks-claude-sonnet-4-6"
+  # At most this many of the top_k retrieved chunks may come from the same
+  # source document, so one broadly-relevant large file can't crowd out
+  # coverage of other docs a request also needs.
+  max_chunks_per_source: 4
+  # Raw candidates fetched before the per-source cap above is applied.
+  over_fetch_multiplier: 3
 
 optimizer:
   score_threshold: 0.85

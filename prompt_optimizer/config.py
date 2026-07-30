@@ -167,6 +167,9 @@ def load_config(path: str = "config.yaml") -> Config:
         max_context_chars=rag_raw.get("max_context_chars", 25000),
         query_type=rag_raw.get("query_type", "hybrid"),
         use_reranker=rag_raw.get("use_reranker", True),
+        generation_endpoint=rag_raw.get("generation_endpoint", "databricks-claude-sonnet-4-6"),
+        max_chunks_per_source=rag_raw.get("max_chunks_per_source", 4),
+        over_fetch_multiplier=rag_raw.get("over_fetch_multiplier", 3),
     )
 
     return Config(prompts=prompts, databricks=databricks, synthetic_data=synthetic_data,

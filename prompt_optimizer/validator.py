@@ -275,20 +275,57 @@ _TRIGGER_TYPES = {
     "@n8n/n8n-nodes-langchain.chatTrigger",
 }
 
-# langchain-namespaced types that are real trigger/orchestrator nodes wired
-# via 'main', not ai_* sub-nodes — excluded from _is_sub_node_type below.
-_NON_SUBNODE_LANGCHAIN_SUFFIXES = (".agent", ".chatTrigger")
+# Sub-nodes are identified by an ALLOWLIST of slot-name prefixes rather than
+# by "any langchain type that isn't a known root node." The latter shape was
+# tried twice and produced a false positive both times (chatTrigger, then
+# chainLlm/textClassifier flagged as sub-nodes and their whole workflows
+# marked structurally invalid), because the root-node set keeps growing:
+# agent, agentNode, chatTrigger, chainLlm, chainSummarization,
+# chainRetrievalQa, textClassifier, informationExtractor, sentimentAnalysis,
+# openAi, googleGemini, code, memoryManager... every one we forget is a
+# false failure attributed to the model.
+#
+# Inverting is far more stable: n8n names sub-nodes after the ai_* slot they
+# plug into, and that convention is regular. Anything not matching one of
+# these prefixes is left alone — a missed real bug (false negative) merely
+# fails to catch something, while a false positive silently corrupts every
+# benchmark number attributed to the model.
+_SUB_NODE_PREFIXES = (
+    "lm",              # lmChatOpenAi, lmChatAnthropic, ...  -> ai_languageModel
+    "memory",          # memoryBufferWindow, memoryRedis, ... -> ai_memory
+    "tool",            # toolWorkflow, toolHttpRequest, ...   -> ai_tool
+    "outputParser",    # outputParserStructured, ...          -> ai_outputParser
+    "embeddings",      # embeddingsOpenAi, ...                -> ai_embedding
+    "textSplitter",    # textSplitterTokenSplitter, ...       -> ai_textSplitter
+    "retriever",       # retrieverVectorStore, ...            -> ai_retriever
+    "reranker",        # rerankerCohere, ...                  -> ai_reranker
+    "documentLoader",  # documentLoader*, ...                 -> ai_document
+    "documentDefaultDataLoader",
+)
+
+# Root nodes whose names collide with a sub-node prefix above. Memory Manager
+# runs in the MAIN chain to load/insert memory messages — it is not itself
+# plugged into an ai_memory slot, despite the "memory" prefix.
+_SUB_NODE_PREFIX_EXCEPTIONS = ("memoryManager",)
+
+# vectorStore* is deliberately absent from both lists: it's genuinely
+# ambiguous (a sub-node when wired as ai_vectorStore, a root node in insert/
+# retrieve modes), so it's left unflagged rather than risk another false
+# positive on a correctly-wired workflow.
 
 
 def _is_sub_node_type(node_type: str) -> bool:
-    """True for any node type that only ever plugs into an ai_* slot (Model,
-    Memory, Tool, Output Parser, etc.) — never wired via 'main'. Every
-    @n8n/n8n-nodes-langchain.* type except the Agent and Chat Trigger is one
-    of these, plus this instance's custom Databricks chat-model sub-node."""
-    return node_type == "CUSTOM.lmChatDatabricks" or (
-        node_type.startswith("@n8n/n8n-nodes-langchain.")
-        and not node_type.endswith(_NON_SUBNODE_LANGCHAIN_SUFFIXES)
-    )
+    """True for node types that only ever plug into an ai_* slot (Model,
+    Memory, Tool, Output Parser, etc.) and are never wired via 'main' —
+    matched by slot-name prefix, see _SUB_NODE_PREFIXES for why."""
+    if node_type == "CUSTOM.lmChatDatabricks":
+        return True
+    if not node_type.startswith("@n8n/n8n-nodes-langchain."):
+        return False
+    suffix = node_type[len("@n8n/n8n-nodes-langchain."):]
+    if suffix.startswith(_SUB_NODE_PREFIX_EXCEPTIONS):
+        return False
+    return suffix.startswith(_SUB_NODE_PREFIXES)
 
 
 def _check_subnode_connections(nodes: List[dict], connections: dict) -> List[str]:
@@ -642,13 +679,23 @@ def validate_workflow_json(text: str) -> StructuralResult:
     if empty_creds:
         result.errors.append(f"Nodes with empty credential IDs: {empty_creds}")
 
+    # Union of the authoritative _TRIGGER_TYPES set and the loose substring
+    # match. The substring check alone produced false "no entry point"
+    # failures for the two real trigger types whose names don't contain the
+    # word: n8n-nodes-base.webhook and n8n-nodes-base.cron — a webhook-
+    # triggered workflow is a perfectly valid entry point and was being
+    # marked structurally invalid. The substring half is kept so a trigger
+    # type missing from _TRIGGER_TYPES still counts.
     has_trigger = any(
-        isinstance(n, dict) and "trigger" in n.get("type", "").lower()
+        isinstance(n, dict)
+        and (n.get("type", "") in _TRIGGER_TYPES or "trigger" in n.get("type", "").lower())
         for n in nodes
     )
     checks["has_trigger_node"] = has_trigger if nodes else False
     if nodes and not has_trigger:
-        result.errors.append("No node type contains 'trigger' — workflow has no entry point.")
+        result.errors.append(
+            "No trigger/entry-point node found — workflow has no entry point."
+        )
 
     schema_findings = _check_schema_issues(workflow)
     checks["no_unknown_parameters"] = len(schema_findings["unknown_params"]) == 0

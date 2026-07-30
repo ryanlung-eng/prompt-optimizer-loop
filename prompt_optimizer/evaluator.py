@@ -130,6 +130,42 @@ def _resolve_prompt(system_prompt: str, conversation: str, inp: SyntheticInput) 
     )
 
 
+_SEAM = "\n\n---\n\n"
+
+
+def _assemble_custom_rag_prompt(base_instructions: str, retrieved_block: str) -> str:
+    """
+    Shared by run_batch_custom_rag and run_batch_custom_rag_v2 — assembles
+    the final system prompt from base_instructions + a retrieved-context
+    block, handling both shapes base_instructions can take:
+
+      - a fully-formed prompt that already embeds _CONVERSATION_EXPR/
+        _USER_ID_EXPR/_TIME_SAVED_EXPR inline and has its own "\\n\\n---\\n\\n"
+        seam (e.g. config.yaml's production prompt, used as-is to make an arm
+        directly comparable to production) — retrieved_block is spliced in
+        at the first such seam, so the placeholders aren't duplicated.
+      - a frozen rules doc with no placeholders of its own (e.g.
+        instructions.md) — retrieved_block + the Conversation/User ID/
+        Minutes Saved trailer are appended after it.
+    """
+    if _CONVERSATION_EXPR in base_instructions and _SEAM in base_instructions:
+        seam_idx = base_instructions.index(_SEAM)
+        return (
+            base_instructions[:seam_idx] + _SEAM + retrieved_block + _SEAM
+            + base_instructions[seam_idx + len(_SEAM):]
+        )
+    return (
+        f"{base_instructions}\n\n---\n\n{retrieved_block}"
+        f"\n\n---\n\nConversation:\n{_CONVERSATION_EXPR}\n\n"
+        f"User ID:\n{_USER_ID_EXPR}\n"
+        f"(This is the Slack ID of the person you are building this workflow "
+        f"for. If any outbound send needs an approval-DM recipient, use this "
+        f"ID directly. Never ask the user for their own Slack ID or handle — "
+        f"you already have it.)\n\n"
+        f"Minutes Saved:\n{_TIME_SAVED_EXPR}"
+    )
+
+
 
 
 class WorkflowEvaluator:
@@ -543,37 +579,7 @@ class WorkflowEvaluator:
             # present exactly once in the resolved template — _run_conversation's
             # self-repair loop calls _resolve_prompt() on every turn, which
             # substitutes these exact placeholder strings wherever they occur.
-            _seam = "\n\n---\n\n"
-            if _CONVERSATION_EXPR in base_instructions and _seam in base_instructions:
-                # base_instructions is a fully-formed prompt that already embeds
-                # the placeholders inline (e.g. config.yaml's production prompt,
-                # used here to make this arm directly comparable to production —
-                # same rules/credentials/approval-pattern text, retrieval is the
-                # only variable). Splice the retrieved block in at the prompt's
-                # own existing seam rather than appending a second, duplicate
-                # trailer after it.
-                seam_idx = base_instructions.index(_seam)
-                system_prompt = (
-                    base_instructions[:seam_idx] + _seam + retrieved_block + _seam
-                    + base_instructions[seam_idx + len(_seam):]
-                )
-            else:
-                # base_instructions is a frozen rules doc with no placeholders of
-                # its own (e.g. instructions.md) — without appending them here,
-                # the model receives only rules + reference docs with no
-                # indication of what to build (previously produced replies like
-                # "what would you like me to build?" instead of failing on bad
-                # JSON).
-                system_prompt = (
-                    f"{base_instructions}\n\n---\n\n{retrieved_block}"
-                    f"\n\n---\n\nConversation:\n{_CONVERSATION_EXPR}\n\n"
-                    f"User ID:\n{_USER_ID_EXPR}\n"
-                    f"(This is the Slack ID of the person you are building this workflow "
-                    f"for. If any outbound send needs an approval-DM recipient, use this "
-                    f"ID directly. Never ask the user for their own Slack ID or handle — "
-                    f"you already have it.)\n\n"
-                    f"Minutes Saved:\n{_TIME_SAVED_EXPR}"
-                )
+            system_prompt = _assemble_custom_rag_prompt(base_instructions, retrieved_block)
 
             key = self._cache_key(system_prompt, inp, endpoint_url)
             cached = self._cache.get(key)
@@ -601,6 +607,93 @@ class WorkflowEvaluator:
         results = await asyncio.gather(*[bounded_call(inp) for inp in inputs])
         if cache_hits:
             print(f"  {cache_hits}/{len(inputs)} conversations served from cache (0 tokens used)")
+        self._save_cache()
+        return results
+
+    async def run_batch_custom_rag_v2(
+        self,
+        base_instructions: str,
+        inputs: List[SyntheticInput],
+        rag_config,  # RAGConfig, from .rag_retriever — see run_batch_custom_rag
+        endpoint_url: Optional[str] = None,
+        use_responses_api: bool = False,
+    ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
+        """
+        Identical to run_batch_custom_rag except the initial retrieval is run
+        through rag_pipeline_v2's relevance filter before being formatted into
+        the prompt (see rag_pipeline_v2.py's module docstring for why this is
+        its own arm instead of replacing run_batch_custom_rag outright).
+        Repair-turn retrieval is intentionally UNFILTERED, same as v1 — it's
+        already narrow (top_k=3, targeted at one specific validation error),
+        so filtering it further has little to gain and one more LLM call to
+        lose time/money on.
+        """
+        from dataclasses import replace as _dc_replace
+
+        from .rag_pipeline_v2 import build_retrieved_block, retrieve_and_filter
+        from .rag_retriever import retrieve_context
+
+        endpoint_url = endpoint_url or (
+            f"{self._config.workspace_url}/serving-endpoints/"
+            f"{rag_config.generation_endpoint}/invocations"
+        )
+        # Relevance filter uses the same cheap/fast model as simulated-user
+        # replies (self._generation_url = fast_generation_endpoint) — mirrors
+        # HR Bot's own choice of a cheap model for classify/filter, reserving
+        # the stronger model for generation only.
+        filter_endpoint_url = self._generation_url
+        filter_headers = self._headers
+
+        sem = asyncio.Semaphore(_MAX_CONCURRENT)
+        cache_hits = 0
+        total_retrieved = 0
+        total_kept = 0
+
+        _repair_rag_config = _dc_replace(rag_config, top_k=3, max_context_chars=4000)
+
+        async def _retrieve_on_repair(error_text: str) -> str:
+            return await asyncio.to_thread(retrieve_context, error_text, _repair_rag_config)
+
+        async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
+            nonlocal cache_hits, total_retrieved, total_kept
+            async with httpx.AsyncClient() as filter_client:
+                retrieved, kept = await retrieve_and_filter(
+                    filter_client, filter_endpoint_url, filter_headers, inp.text, rag_config,
+                )
+            total_retrieved += len(retrieved)
+            total_kept += len(kept)
+            retrieved_block = build_retrieved_block(kept, len(retrieved), rag_config)
+            system_prompt = _assemble_custom_rag_prompt(base_instructions, retrieved_block)
+
+            key = self._cache_key(system_prompt, inp, endpoint_url)
+            cached = self._cache.get(key)
+            if cached is not None:
+                cache_hits += 1
+                return inp, cached["response"], cached["transcript"]
+
+            async with sem:
+                async with httpx.AsyncClient() as client:
+                    try:
+                        response, transcript = await self._run_conversation(
+                            client, system_prompt, inp,
+                            endpoint_url=endpoint_url, use_responses_api=use_responses_api,
+                            retrieve_on_repair=_retrieve_on_repair,
+                        )
+                    except Exception as e:
+                        cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
+                        print(f"  Warning: custom-RAG-v2 eval failed for '{inp.text[:60]}…': {cause}")
+                        response, transcript = f"[ERROR: {cause}]", []
+                    if not response.startswith("[ERROR:"):
+                        self._cache[key] = {"response": response, "transcript": transcript}
+                        self._save_cache()
+                    return inp, response, transcript
+
+        results = await asyncio.gather(*[bounded_call(inp) for inp in inputs])
+        if cache_hits:
+            print(f"  {cache_hits}/{len(inputs)} conversations served from cache (0 tokens used)")
+        if total_retrieved:
+            print(f"  Relevance filter kept {total_kept}/{total_retrieved} retrieved chunks "
+                  f"({total_retrieved - total_kept} dropped) across {len(inputs)} inputs")
         self._save_cache()
         return results
 

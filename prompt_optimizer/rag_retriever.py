@@ -116,6 +116,29 @@ def retrieve_chunks(query_text: str, config: RAGConfig = RAGConfig()) -> List[Re
     return selected
 
 
+def format_chunks(chunks: List[RetrievedChunk], max_context_chars: int) -> str:
+    """
+    Formats an already-selected, already-ordered list of chunks into a single
+    context block, trimmed to max_context_chars (chunks dropped from the end
+    first — callers are expected to pass chunks best-first). Split out of
+    retrieve_context() so a caller that wants to filter/reorder chunks before
+    formatting (e.g. rag_pipeline_v2.py's relevance filter) can reuse the same
+    budget-trimming logic instead of reimplementing it.
+    """
+    assembled: List[str] = []
+    total_chars = 0
+    for c in chunks:
+        block = f"### {c.title}\n{c.text}"
+        if total_chars + len(block) > max_context_chars and assembled:
+            # Keep at least one chunk even if it alone exceeds the budget — a
+            # single retrieved section is still better than an empty context.
+            break
+        assembled.append(block)
+        total_chars += len(block)
+
+    return "\n\n".join(assembled)
+
+
 def retrieve_context(query_text: str, config: RAGConfig = RAGConfig()) -> str:
     """
     Returns a single formatted context block for the retrieved KB sections,
@@ -128,16 +151,4 @@ def retrieve_context(query_text: str, config: RAGConfig = RAGConfig()) -> str:
     available here to measure exactly.
     """
     chunks = retrieve_chunks(query_text, config)
-
-    assembled: List[str] = []
-    total_chars = 0
-    for c in chunks:
-        block = f"### {c.title}\n{c.text}"
-        if total_chars + len(block) > config.max_context_chars and assembled:
-            # Keep at least one chunk even if it alone exceeds the budget — a
-            # single retrieved section is still better than an empty context.
-            break
-        assembled.append(block)
-        total_chars += len(block)
-
-    return "\n\n".join(assembled)
+    return format_chunks(chunks, config.max_context_chars)

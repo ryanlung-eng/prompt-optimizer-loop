@@ -229,10 +229,11 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 # prompts weren't the same to begin with."                               #
 # --------------------------------------------------------------------- #
 
-_HARD_ARMS = ["production", "custom_rag"]
+_HARD_ARMS = ["production", "custom_rag", "custom_rag_v2"]
 _HARD_ARM_LABELS = {
     "production": "Production (KA endpoint)",
     "custom_rag": "Custom RAG (same prompt + retrieved big-corpus context)",
+    "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
 }
 
 
@@ -241,8 +242,9 @@ async def run_hard_benchmark(
     evaluator: WorkflowEvaluator,
     judge: DatabricksJudge,
 ) -> Dict[str, List[EvalResult]]:
+    from dataclasses import replace as _dc_replace
+
     from .hard_scenarios import load_hard_scenarios
-    from .rag_retriever import RAGConfig
 
     inputs = load_hard_scenarios()
     base_prompt = config.prompts[config.benchmark.node_name]
@@ -257,17 +259,13 @@ async def run_hard_benchmark(
 
     # Override enabled=True regardless of config.yaml's rag.enabled — running
     # this benchmark IS the point, independent of whether the main eval loop
-    # has the pipeline switched on yet.
-    rag_config = RAGConfig(
-        enabled=True,
-        endpoint_name=config.rag.endpoint_name,
-        index_name=config.rag.index_name,
-        instructions_path=config.rag.instructions_path,
-        top_k=config.rag.top_k,
-        max_context_chars=config.rag.max_context_chars,
-        query_type=config.rag.query_type,
-        use_reranker=config.rag.use_reranker,
-    )
+    # has the pipeline switched on yet. dataclasses.replace (rather than
+    # rebuilding field-by-field) so every RAGConfig field config.yaml exposes
+    # — including generation_endpoint/max_chunks_per_source/
+    # over_fetch_multiplier, previously NOT forwarded here at all, so
+    # overriding them in config.yaml was silently ignored by this benchmark —
+    # actually reaches both custom-RAG arms below.
+    rag_config = _dc_replace(config.rag, enabled=True)
 
     results: Dict[str, List[EvalResult]] = {}
 
@@ -279,6 +277,11 @@ async def run_hard_benchmark(
     console.print(f"  Running arm: custom_rag on {len(inputs)} hard scenarios…")
     pairs = await evaluator.run_batch_custom_rag(base_instructions, inputs, rag_config)
     results["custom_rag"] = await judge.evaluate_batch(pairs)
+
+    console.print(f"  Running arm: custom_rag_v2 (relevance filter + grounding) "
+                  f"on {len(inputs)} hard scenarios…")
+    pairs_v2 = await evaluator.run_batch_custom_rag_v2(base_instructions, inputs, rag_config)
+    results["custom_rag_v2"] = await judge.evaluate_batch(pairs_v2)
 
     return results
 
@@ -340,46 +343,52 @@ def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names:
     console.print(table)
 
 
-def print_qualitative_examples_hard(results: Dict[str, List[EvalResult]], n: int = 5) -> None:
+def print_qualitative_examples_hard(
+    results: Dict[str, List[EvalResult]], arm_a: str = "production", arm_b: str = "custom_rag", n: int = 5,
+) -> None:
     """
     With only 18 scenarios, every disagreement is worth seeing directly —
     unlike print_qualitative_examples (which only checks one direction to
-    build a monotonic "value of this project" story), this checks both:
-    where custom_rag got right what production got wrong, and vice versa.
+    build a monotonic "value of this project" story), this checks both
+    directions between any two arms. Defaults to production vs custom_rag;
+    pass arm_a/arm_b to compare any other pair (e.g. custom_rag vs
+    custom_rag_v2, to see concretely what the relevance filter changed).
     """
-    production = {r.input.text: r for r in results["production"]}
-    custom_rag = {r.input.text: r for r in results["custom_rag"]}
+    a_results = {r.input.text: r for r in results[arm_a]}
+    b_results = {r.input.text: r for r in results[arm_b]}
+    a_label = _HARD_ARM_LABELS.get(arm_a, arm_a)
+    b_label = _HARD_ARM_LABELS.get(arm_b, arm_b)
 
-    rag_wins = [
-        (text, production[text], custom_rag[text]) for text in production
-        if text in custom_rag and not production[text].structural.valid
-        and custom_rag[text].structural.valid
+    b_wins = [
+        (text, a_results[text], b_results[text]) for text in a_results
+        if text in b_results and not a_results[text].structural.valid
+        and b_results[text].structural.valid
     ]
-    ka_wins = [
-        (text, production[text], custom_rag[text]) for text in production
-        if text in custom_rag and production[text].structural.valid
-        and not custom_rag[text].structural.valid
+    a_wins = [
+        (text, a_results[text], b_results[text]) for text in a_results
+        if text in b_results and a_results[text].structural.valid
+        and not b_results[text].structural.valid
     ]
 
-    if rag_wins:
-        console.rule("[bold green]Custom RAG got right, production KA got wrong[/bold green]")
-        for text, prod_r, rag_r in rag_wins[:n]:
+    if b_wins:
+        console.rule(f"[bold green]{b_label} got right, {a_label} got wrong[/bold green]")
+        for text, a_r, b_r in b_wins[:n]:
             console.print(f"\n[bold]Scenario:[/bold] {text[:150]}…")
-            errors = "; ".join(prod_r.structural.errors[:3]) or "(no JSON produced at all)"
-            console.print(f"[red]Production — structural errors:[/red] {errors}")
-            console.print(f"[green]Custom RAG — structurally valid:[/green] {rag_r.structural.valid}")
+            errors = "; ".join(a_r.structural.errors[:3]) or "(no JSON produced at all)"
+            console.print(f"[red]{a_label} — structural errors:[/red] {errors}")
+            console.print(f"[green]{b_label} — structurally valid:[/green] {b_r.structural.valid}")
 
-    if ka_wins:
-        console.rule("[bold yellow]Production KA got right, custom RAG got wrong[/bold yellow]")
-        for text, prod_r, rag_r in ka_wins[:n]:
+    if a_wins:
+        console.rule(f"[bold yellow]{a_label} got right, {b_label} got wrong[/bold yellow]")
+        for text, a_r, b_r in a_wins[:n]:
             console.print(f"\n[bold]Scenario:[/bold] {text[:150]}…")
-            errors = "; ".join(rag_r.structural.errors[:3]) or "(no JSON produced at all)"
-            console.print(f"[red]Custom RAG — structural errors:[/red] {errors}")
-            console.print(f"[green]Production — structurally valid:[/green] {prod_r.structural.valid}")
+            errors = "; ".join(b_r.structural.errors[:3]) or "(no JSON produced at all)"
+            console.print(f"[red]{b_label} — structural errors:[/red] {errors}")
+            console.print(f"[green]{a_label} — structurally valid:[/green] {a_r.structural.valid}")
 
-    if not rag_wins and not ka_wins:
-        console.print("[yellow]No clean failure/success disagreements between arms — "
-                       "either both succeeded or both failed on every shared scenario.[/yellow]")
+    if not b_wins and not a_wins:
+        console.print(f"[yellow]No clean failure/success disagreements between {a_label} and "
+                       f"{b_label} — either both succeeded or both failed on every shared scenario.[/yellow]")
 
 
 async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
@@ -390,5 +399,7 @@ async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
 
     results = await run_hard_benchmark(config, evaluator, judge)
     print_hard_benchmark_report(results, dim_names)
-    print_qualitative_examples_hard(results)
+    print_qualitative_examples_hard(results, "production", "custom_rag")
+    console.rule("[bold]custom_rag vs custom_rag_v2 (relevance filter + grounding)[/bold]")
+    print_qualitative_examples_hard(results, "custom_rag", "custom_rag_v2")
     return results

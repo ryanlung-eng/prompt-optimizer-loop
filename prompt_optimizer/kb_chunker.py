@@ -83,35 +83,49 @@ def _split_sections(markdown_text: str) -> List[dict]:
 
 def _merge_small_sections(sections: List[dict], min_chars: int) -> List[dict]:
     """
-    Merges consecutive sections (in file order) into a running buffer until it
-    reaches min_chars, then ships it as one chunk with a combined title. A
-    section already >= min_chars on its own is never merged with a neighbor —
-    this only raises the floor on how small a chunk can be, never forces large
-    sections together. Any small leftover at the end of the file (nothing left
-    to merge forward into) is folded into the previous chunk instead of
-    shipping as an undersized orphan; if the file has no prior chunk either
-    (the whole file was small), it ships as-is.
+    Merges consecutive SMALL sections (each individually under min_chars, in
+    file order) into a running buffer until the buffer itself reaches
+    min_chars, then ships it as one chunk with a combined title.
+
+    A section that's already >= min_chars on its own always ships standalone
+    — it is NEVER merged with a neighbor in either direction, even a small
+    one. Earlier version of this function merged in strict file order
+    regardless of individual section size, which glued small sections onto
+    whatever large section happened to be adjacent (confirmed on
+    n8nNodeCatalog-sheets.md: a 319-char "Credential Types" section got
+    merged onto the unrelated 4203-char "Google Sheets Trigger" section) —
+    exactly the dilution problem this file exists to prevent, just
+    reintroduced at merge time instead of chunk-creation time.
+
+    A small buffer that never reaches min_chars (nothing safe left to merge
+    with — e.g. trailing small sections at end of file, or a small section
+    boxed in between two large ones) ships as its own undersized chunk
+    rather than being forced onto a large neighbor; an occasional small
+    standalone chunk is the lesser evil versus mixing unrelated topics.
     """
     merged: List[dict] = []
     buf_titles: List[str] = []
     buf_texts: List[str] = []
     buf_len = 0
 
+    def _flush_buffer() -> None:
+        nonlocal buf_titles, buf_texts, buf_len
+        if buf_texts:
+            merged.append({"title": " / ".join(buf_titles), "text": "\n\n".join(buf_texts)})
+            buf_titles, buf_texts, buf_len = [], [], 0
+
     for sec in sections:
+        if len(sec["text"]) >= min_chars:
+            _flush_buffer()
+            merged.append({"title": sec["title"], "text": sec["text"]})
+            continue
         buf_titles.append(sec["title"])
         buf_texts.append(sec["text"])
         buf_len += len(sec["text"])
         if buf_len >= min_chars:
-            merged.append({"title": " / ".join(buf_titles), "text": "\n\n".join(buf_texts)})
-            buf_titles, buf_texts, buf_len = [], [], 0
+            _flush_buffer()
 
-    if buf_texts:
-        if merged:
-            merged[-1]["title"] += " / " + " / ".join(buf_titles)
-            merged[-1]["text"] += "\n\n" + "\n\n".join(buf_texts)
-        else:
-            merged.append({"title": " / ".join(buf_titles), "text": "\n\n".join(buf_texts)})
-
+    _flush_buffer()
     return merged
 
 

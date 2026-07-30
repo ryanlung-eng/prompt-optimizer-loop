@@ -27,8 +27,8 @@ def _unwrap(e: Exception) -> Exception:
 # Supported integrations manifest (single source of truth)           #
 # ------------------------------------------------------------------ #
 
-SUPPORTED_TRIGGERS = ["cron", "gmail", "slack", "jira", "sheets", "trello", "drive", "calendar"]
-SUPPORTED_OUTPUTS = ["slack_message", "email", "sheets_update", "trello_card", "docs_update", "drive_upload", "slides_create", "calendar_event"]
+SUPPORTED_TRIGGERS = ["cron", "gmail", "slack", "jira", "sheets", "drive", "calendar"]
+SUPPORTED_OUTPUTS = ["slack_message", "email", "sheets_update", "docs_update", "drive_upload", "slides_create", "calendar_event"]
 # Outbound outputs that require an optional approval gate
 OUTBOUND_OUTPUTS = ["slack_message", "email"]
 
@@ -72,36 +72,23 @@ _COMBINATIONS = [
     # Sheets-triggered
     ("sheets", "slack_message"),
     ("sheets", "email"),
-    # Trello-triggered (new/updated card)
-    ("trello", "slack_message"),
-    ("trello", "email"),
-    ("trello", "sheets_update"),
     # Google Drive-triggered (new/updated file in a watched folder)
     ("drive",  "slack_message"),
     ("drive",  "email"),
     ("drive",  "sheets_update"),
     # New outputs from existing triggers
-    ("cron",   "trello_card"),
     ("cron",   "docs_update"),
     ("cron",   "drive_upload"),
-    ("gmail",  "trello_card"),
     ("gmail",  "docs_update"),
-    ("slack",  "trello_card"),
-    ("jira",   "trello_card"),
     ("jira",   "docs_update"),
-    ("sheets", "trello_card"),
     ("sheets", "drive_upload"),
     # Cross-connector combos (new trigger x new output)
-    ("trello", "docs_update"),
-    ("trello", "drive_upload"),
-    ("drive",  "trello_card"),
     ("drive",  "docs_update"),
     # Google Slides output (no Slides trigger exists in n8n, output-only)
     ("cron",   "slides_create"),
     ("gmail",  "slides_create"),
     ("jira",   "slides_create"),
     ("sheets", "slides_create"),
-    ("trello", "slides_create"),
     ("drive",  "slides_create"),
     # Google Calendar-triggered (new/updated/cancelled event)
     ("calendar", "slack_message"),
@@ -112,10 +99,8 @@ _COMBINATIONS = [
     ("gmail",  "calendar_event"),
     ("jira",   "calendar_event"),
     ("sheets", "calendar_event"),
-    ("trello", "calendar_event"),
     ("drive",  "calendar_event"),
     # Cross-connector combos involving Calendar
-    ("calendar", "trello_card"),
     ("calendar", "docs_update"),
     ("calendar", "drive_upload"),
     ("calendar", "slides_create"),
@@ -146,16 +131,15 @@ The user should never need to say who approves it.
 
 Supported integrations (ONLY these exist — do not invent others):
   TRIGGERS : Gmail (new email matching conditions), Slack message, Google Sheets \
-(new/updated row), Jira issue event, Cron/Schedule, Trello (new/updated card), \
-Google Drive (new/updated file in a watched folder), Google Calendar (event \
-created/updated/cancelled/started/ended)
+(new/updated row), Jira issue event, Cron/Schedule, Google Drive (new/updated file \
+in a watched folder), Google Calendar (event created/updated/cancelled/started/ended)
   OUTPUTS  : Send Slack message to a channel, Send Gmail, Update Google Sheets row, \
-Create a Trello card, Create/update a Google Doc, Upload a file to Google Drive, \
+Create/update a Google Doc, Upload a file to Google Drive, \
 Create a Google Slides presentation, Create a Google Calendar event
   APPROVAL : Every Slack message or email send is MANDATORY-approved — the \
 requester automatically gets a Slack DM with Approve/Deny buttons and a preview \
 before it sends. This is not optional and the user never asks for it themselves. \
-Sheets updates, Trello cards, Google Docs updates, Google Drive uploads, Google \
+Sheets updates, Google Docs updates, Google Drive uploads, Google \
 Slides presentations, and Google Calendar events are not messages sent to a person, \
 so they do not go through approval.
 
@@ -186,16 +170,16 @@ Every message you're given was generated as an IN-DISTRIBUTION request — i.e. 
 it only ever describes one of these ACTUALLY SUPPORTED integrations, so treat \
 ALL of them as available and never say one "is not supported":
   TRIGGERS : Gmail, Slack message, Google Sheets, Jira issue event, Cron/Schedule, \
-Trello (new/updated card), Google Drive (new/updated file in a watched folder), \
+Google Drive (new/updated file in a watched folder), \
 Google Calendar (event created/updated/cancelled/started/ended)
-  OUTPUTS  : Slack message, Gmail, Google Sheets row update, Trello card creation, \
+  OUTPUTS  : Slack message, Gmail, Google Sheets row update, \
 Google Docs create/update, Google Drive upload, Google Slides presentation creation, \
 Google Calendar event creation
 
 Describe the exact workflow structure, key nodes, and any approval gates a \
 high-quality assistant would build for the request. Do NOT say an integration \
 listed above is unavailable or unsupported — every message you see here uses \
-only supported integrations by construction, even ones (Trello, Google Docs, \
+only supported integrations by construction, even ones (Google Docs, \
 Google Drive, Google Slides, Google Calendar) that might not be part of your \
 own general knowledge of typical n8n deployments.
 

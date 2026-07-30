@@ -152,28 +152,6 @@ HARD_SCENARIOS: list = [
     ),
     SyntheticInput(
         text=(
-            "When a card is created in our 'Intake' Trello list, have AI look at the "
-            "card and fill in a priority label and a one-line description update on that "
-            "same card. We also watch that list for any card updates, so make sure the "
-            "bot updating its own card doesn't cause it to process the card over and over."
-        ),
-        category="hard_trello_card_self_update",
-        trigger="trello",
-        outputs=["trello_card"],
-        has_approval=False,
-        is_ood=False,
-        expected_behavior=(
-            "Trello Trigger subscribed to the list (fires on every webhook event for "
-            "that model, including updateCard — there is no event-type filter on this "
-            "node). Because the bot's own card update will re-fire the same trigger, the "
-            "workflow must include a guard before re-processing — e.g. checking whether "
-            "the priority label/description already match what the bot would set, or "
-            "checking the update's originating member — so it does not loop indefinitely "
-            "re-labeling the same card."
-        ),
-    ),
-    SyntheticInput(
-        text=(
             "Every morning at 9am, pull the last 24 hours of messages from #eng-updates, "
             "#product-updates, and #support-escalations, dedupe anything mentioned in "
             "more than one channel, and have AI write ONE combined digest that gets "

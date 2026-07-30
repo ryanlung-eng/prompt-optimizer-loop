@@ -52,9 +52,9 @@ def _format_transcript(transcript: List[dict]) -> str:
 _JUDGE_SYSTEM_IN_DIST = """\
 You are an expert evaluator of an AI workflow builder assistant. \
 The assistant helps non-technical Ibotta employees build automation workflows \
-(using Gmail, Slack, Jira, Google Sheets, Trello, Google Drive, Google Calendar, \
-and Cron triggers; with outputs of Slack messages, emails, Sheets updates, Trello \
-cards, Google Docs updates, Google Drive uploads, Google Slides presentations, and \
+(using Gmail, Slack, Jira, Google Sheets, Google Drive, Google Calendar, \
+and Cron triggers; with outputs of Slack messages, emails, Sheets updates, \
+Google Docs updates, Google Drive uploads, Google Slides presentations, and \
 Google Calendar events; with a mandatory Slack approval gate on every outbound action).
 
 You will receive: the user's original request, what a great response should do, \
@@ -104,7 +104,6 @@ assistant. Do NOT count referencing any of these as fabrication:
       - Databricks credential ID: DNV5Ld0Um1SCcA04
       - Jira credential ID: Q8l4d25oEqHPYX7H
       - Slack credential ID: qrX7FbQkvUaMRB0N
-      - Trello credential ID: K3mQ8vXpL2wR9tYs
       - Google Docs credential ID: N7bH4jC1mZ8qFdWe
       - Google Drive credential ID: P5tL9xM3vB7nJhKr
       - Google Slides credential ID: T8vN2xQ4mW6rL9pJ
@@ -123,12 +122,12 @@ assistant. Do NOT count referencing any of these as fabrication:
     known instance fact, not a guess, even though you won't see it stated in
     the user's message. Do NOT flag stating this domain as an assumption.
   • Reusing a credential ID as the VALUE of an unrelated field (e.g. putting
-    the Google Sheets credential ID into `documentId`, or the Trello
-    credential ID into `listId`/`boardId`) IS a real, correctly-flaggable
-    fabrication — a credential ID and a resourceLocator value are different
-    things, and conflating them is a genuine configuration error, not an
-    acceptable placeholder. Keep flagging this when you see it.
-  • The newer integrations (Trello, Google Docs, Google Drive, Google Slides,
+    the Google Sheets credential ID into `documentId`) IS a real,
+    correctly-flaggable fabrication — a credential ID and a resourceLocator
+    value are different things, and conflating them is a genuine
+    configuration error, not an acceptable placeholder. Keep flagging this
+    when you see it.
+  • The newer integrations (Google Docs, Google Drive, Google Slides,
     Google Calendar) have all been individually verified against n8n's actual
     source code — parameter names like `rrule`, `getSlides` (a real Google
     Slides operation), or `language` on the Code node are confirmed real, not
@@ -221,9 +220,9 @@ You are evaluating whether an AI workflow builder correctly handles a request \
 for an UNSUPPORTED integration.
 
 Supported integrations: Gmail trigger, Slack trigger, Jira trigger, Google Sheets trigger, \
-Trello trigger, Google Drive trigger, Google Calendar trigger, Cron/schedule trigger; \
+Google Drive trigger, Google Calendar trigger, Cron/schedule trigger; \
 outputs: Slack message, Gmail (both automatically require a Slack Approve/Deny DM to the \
-workflow owner before sending), Sheets row update, Trello card creation, Google Docs \
+workflow owner before sending), Sheets row update, Google Docs \
 create/update, Google Drive upload, Google Slides presentation creation, Google Calendar \
 event creation (none of these last six require approval).
 

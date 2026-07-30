@@ -321,11 +321,19 @@ def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names:
         warn_row.append(str(sum(len(x.structural.warnings) for x in results[arm])))
     table.add_row(*warn_row)
 
-    sound_row = ["Sound — 0 soundness issues (Layer 3)"]
+    # Label reads "N/M reviewed" rather than embedding a bare fraction, since
+    # "0 soundness issues" in a column header previously read as if 0 were a
+    # fixed count rather than the qualifying criterion (zero issues = sound).
+    # M (the denominator) is NOT the arm's full scenario count — it's only
+    # calls that produced something resembling JSON at all (soundness_reviewed
+    # requires a `{`...`}` span in the response); an arm with a lot of outright
+    # failures (HTTP errors, pure-prose non-attempts) will show a smaller M,
+    # which is itself a signal, not a discrepancy to reconcile against N.
+    sound_row = ["Sound (zero issues found)"]
     for arm in _HARD_ARMS:
         reviewed = [x for x in results[arm] if x.soundness_reviewed]
         sound = sum(1 for x in reviewed if not x.soundness_issues)
-        sound_row.append(f"{sound}/{len(reviewed)}" if reviewed else "n/a")
+        sound_row.append(f"{sound}/{len(reviewed)} reviewed" if reviewed else "n/a")
     table.add_row(*sound_row)
 
     console.print(table)

@@ -96,10 +96,16 @@ rows = [c.to_dict() for c in chunks]
 df = spark.createDataFrame(rows)
 
 # Delta Sync indexes require Change Data Feed enabled on the source table.
+# overwriteSchema is required whenever the chunk schema itself changes (e.g.
+# the "source" column added for per-document retrieval capping) — mode
+# "overwrite" alone only replaces DATA; without this, Delta rejects the
+# write with a metadata/schema mismatch rather than silently altering an
+# existing table's schema.
 (
     df.write.format("delta")
     .mode("overwrite")
     .option("delta.enableChangeDataFeed", "true")
+    .option("overwriteSchema", "true")
     .saveAsTable(SOURCE_TABLE)
 )
 print(f"Wrote {df.count()} rows to {SOURCE_TABLE}")

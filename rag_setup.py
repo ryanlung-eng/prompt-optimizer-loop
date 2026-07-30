@@ -117,12 +117,20 @@ except Exception as e:
 
 # COMMAND ----------
 
-# MAGIC %md ## Create the Delta Sync index (skip if it already exists)
+# MAGIC %md ## Create the Delta Sync index (recreate if the chunk schema changed)
+# MAGIC
+# MAGIC **Important:** `index.sync()` only picks up row-level content changes in
+# MAGIC the source table (inserts/updates/deletes) — it does NOT pick up a
+# MAGIC schema change (a column added/removed, like `source` below). Confirmed
+# MAGIC via `BadRequest: Requested columns to fetch are not present in index: source`
+# MAGIC after a plain sync — the set of queryable columns is fixed at index
+# MAGIC creation. Whenever `kb_chunker.py`'s `DocChunk` fields change, the index
+# MAGIC must be deleted and recreated, not just synced.
 
 # COMMAND ----------
 
-try:
-    index = client.create_delta_sync_index(
+def _create_index():
+    return client.create_delta_sync_index(
         endpoint_name=ENDPOINT_NAME,
         source_table_name=SOURCE_TABLE,
         index_name=INDEX_NAME,
@@ -131,12 +139,18 @@ try:
         embedding_source_column="text",
         embedding_model_endpoint_name=EMBEDDING_MODEL_ENDPOINT,
     )
+
+try:
+    index = _create_index()
     print(f"Created index: {INDEX_NAME}")
 except Exception as e:
     if "already exists" in str(e).lower() or "RESOURCE_ALREADY_EXISTS" in str(e):
-        print(f"Index {INDEX_NAME} already exists — fetching it and triggering a sync instead.")
-        index = client.get_index(index_name=INDEX_NAME)
-        index.sync()
+        print(f"Index {INDEX_NAME} already exists — deleting and recreating so it picks up "
+              f"the current chunk schema/columns (this re-embeds everything from scratch; "
+              f"a plain sync would silently keep serving the OLD schema instead).")
+        client.delete_index(endpoint_name=ENDPOINT_NAME, index_name=INDEX_NAME)
+        index = _create_index()
+        print(f"Recreated index: {INDEX_NAME}")
     else:
         raise
 

@@ -278,14 +278,30 @@ Specifically hunt for:
     an AI Agent prompt asking for something the rest of the workflow can't supply.
   • REDUNDANT OR DEAD LOGIC — a node whose output nothing meaningful depends on,
     a condition that can never be false/true given how it's used, duplicate steps.
-  • MISSING SAFETY PATTERNS FOR WHAT WAS ASKED — e.g. the user asked for an
-    approval step and the outbound send bypasses it; error-prone external calls
+  • MISSING SAFETY PATTERNS FOR WHAT WAS ASKED — e.g. the outbound send
+    bypasses a required approval step; error-prone external calls
     (HTTP Request to a flaky API) with no retry/error handling when the user's
     request implies reliability matters.
+
   • SUB-NODE / SCHEMA MISMATCHES A STATIC CHECK WOULDN'T CATCH — e.g. a
     Structured Output Parser whose example schema doesn't actually match the
     fields referenced downstream; an aggregation step that doesn't actually
     aggregate the fields needed later.
+
+DOMAIN RULE YOU MUST NOT FLAG AS A BUG — the approval gate is MANDATORY on this
+platform for every outbound send of a Slack message or email (DM or channel
+post, any recipient). It is NOT something the user has to request, and its
+presence is NEVER an "unsolicited addition", "undocumented dependency", or
+"contradiction of stated intent" — a workflow that sends a Slack message or
+email WITHOUT one is the actual bug. The gate is a fixed four-node pattern
+("Get DM Channel ID" -> "Call Approval Workflow" -> "IF Approved" -> "No
+Operation") that calls a pre-existing shared sub-workflow by a fixed ID, so do
+not flag that sub-workflow as unverified/missing/hardcoded either, and do not
+flag the "No Operation" node on the deny branch as dead logic — it is the
+required shape. Conversely, approval is NEVER required for a Google Sheets
+update, Google Docs update, Google Drive upload, Google Slides presentation, or
+Google Calendar event on its own — none of those send a message to a person, so
+DO flag a gate added around one of those alone.
 
 Do NOT re-flag things a deterministic parameter/enum/connectivity checker would
 already catch (invented parameter names, disconnected nodes, wrong credential

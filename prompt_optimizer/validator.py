@@ -267,16 +267,27 @@ _TRIGGER_TYPES = {
     "n8n-nodes-base.googleSheetsTrigger", "n8n-nodes-base.slackTrigger",
     "n8n-nodes-base.trelloTrigger", "n8n-nodes-base.googleDriveTrigger",
     "n8n-nodes-base.googleCalendarTrigger",
+    # Real trigger despite living in the @n8n/n8n-nodes-langchain namespace —
+    # it's the entry point for a chat-triggered agent workflow, wired via
+    # 'main' like any other trigger, NOT an ai_* sub-node. Confirmed missing
+    # here caused every node in a chatTrigger-based workflow to be flagged as
+    # "unreachable from any trigger" (BFS never had a root to start from).
+    "@n8n/n8n-nodes-langchain.chatTrigger",
 }
+
+# langchain-namespaced types that are real trigger/orchestrator nodes wired
+# via 'main', not ai_* sub-nodes — excluded from _is_sub_node_type below.
+_NON_SUBNODE_LANGCHAIN_SUFFIXES = (".agent", ".chatTrigger")
 
 
 def _is_sub_node_type(node_type: str) -> bool:
     """True for any node type that only ever plugs into an ai_* slot (Model,
     Memory, Tool, Output Parser, etc.) — never wired via 'main'. Every
-    @n8n/n8n-nodes-langchain.* type except the Agent itself is one of these,
-    plus this instance's custom Databricks chat-model sub-node."""
+    @n8n/n8n-nodes-langchain.* type except the Agent and Chat Trigger is one
+    of these, plus this instance's custom Databricks chat-model sub-node."""
     return node_type == "CUSTOM.lmChatDatabricks" or (
-        node_type.startswith("@n8n/n8n-nodes-langchain.") and not node_type.endswith(".agent")
+        node_type.startswith("@n8n/n8n-nodes-langchain.")
+        and not node_type.endswith(_NON_SUBNODE_LANGCHAIN_SUFFIXES)
     )
 
 

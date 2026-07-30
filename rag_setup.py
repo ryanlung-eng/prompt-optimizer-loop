@@ -97,17 +97,17 @@ from databricks.ai_search.client import AISearchClient
 
 client = AISearchClient()
 
-# Endpoint already exists and is valid — skipping recreation. Uncomment if
-# you ever need to provision a fresh one (e.g. a new ENDPOINT_NAME).
-# try:
-#     client.create_endpoint(name=ENDPOINT_NAME, endpoint_type="STANDARD")
-#     print(f"Created endpoint: {ENDPOINT_NAME}")
-# except Exception as e:
-#     # Already exists on a re-run — safe to ignore, surface anything else.
-#     if "already exists" in str(e).lower() or "RESOURCE_ALREADY_EXISTS" in str(e):
-#         print(f"Endpoint {ENDPOINT_NAME} already exists, skipping.")
-#     else:
-#         raise
+# Idempotent — the except branch below already handles the endpoint
+# existing from a prior run, so this is safe to leave uncommented/re-run.
+try:
+    client.create_endpoint(name=ENDPOINT_NAME, endpoint_type="STANDARD")
+    print(f"Created endpoint: {ENDPOINT_NAME}")
+except Exception as e:
+    # Already exists on a re-run — safe to ignore, surface anything else.
+    if "already exists" in str(e).lower() or "RESOURCE_ALREADY_EXISTS" in str(e):
+        print(f"Endpoint {ENDPOINT_NAME} already exists, skipping.")
+    else:
+        raise
 
 # COMMAND ----------
 

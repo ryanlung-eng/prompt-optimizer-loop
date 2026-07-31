@@ -212,6 +212,16 @@ for r in _smoke["result"]["data_array"]:
 
 # COMMAND ----------
 
+from pathlib import Path
+p = Path("/Workspace/Users/ryan.lung@ibotta.com/n8n-optimizer-cache/conversation_cache.json")
+if p.exists():
+    print(f"deleting {p} ({p.stat().st_size:,} bytes)")
+    p.unlink()
+else:
+    print("already gone")
+
+# COMMAND ----------
+
 from prompt_optimizer.config import load_config
 from prompt_optimizer import benchmark
 

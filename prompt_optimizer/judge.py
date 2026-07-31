@@ -63,16 +63,28 @@ def _loads_lenient(snippet: str) -> dict:
         return json.loads(snippet)
     except json.JSONDecodeError:
         pass
+
+    # Every path below this point means the endpoint ignored an explicit
+    # "output raw JSON only" instruction. That's tolerated so a formatting
+    # quirk in the SCORER can't silently delete a scenario from the metric —
+    # but it is logged, not swallowed. Silent tolerance would hide the judge
+    # drifting over time, which is exactly the kind of slow degradation this
+    # pipeline exists to catch. Strictness stays absolute on the workflow side
+    # (validator.py), where malformed JSON is the actual defect being measured.
     try:
         value = ast.literal_eval(snippet)   # single quotes, True/False/None
         if isinstance(value, dict):
+            print("  Note: judge emitted Python-dict syntax (single quotes / "
+                  "True|False|None) instead of JSON — repaired.")
             return value
     except (ValueError, SyntaxError):
         pass
+
     repaired = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)', r'\1"\2"\3', snippet)
     value = json.loads(repaired)
     if not isinstance(value, dict):
         raise ValueError(f"Parsed value is {type(value).__name__}, not an object")
+    print("  Note: judge emitted bare (unquoted) object keys instead of JSON — repaired.")
     return value
 
 

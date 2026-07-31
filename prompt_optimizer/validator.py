@@ -328,6 +328,148 @@ def _is_sub_node_type(node_type: str) -> bool:
     return suffix.startswith(_SUB_NODE_PREFIXES)
 
 
+# Credential types for providers this platform has NO credential for. A
+# DENYLIST rather than an allowlist on purpose: an allowlist would fail any
+# legitimate credential we forgot to enumerate (httpHeaderAuth, httpCustomAuth,
+# ...), which is exactly the false-positive class that has repeatedly made the
+# model look worse than it is. Everything here is a provider with no credential
+# on this instance, so a hit is unambiguously a hallucinated integration.
+_UNAVAILABLE_CREDENTIAL_TYPES = {
+    "openAiApi", "openRouterApi", "anthropicApi", "cohereApi", "huggingFaceApi",
+    "postgres", "mySql", "mongoDb", "redis",
+    "notionApi", "discordApi", "telegramApi", "microsoftTeamsOAuth2Api",
+    "stripeApi", "pineconeApi", "githubApi", "tavilyApi", "trelloApi",
+}
+
+# The one credential-type typo confirmed in real generated output. n8n's real
+# type is `databricks`; `databricksApi` does not exist and fails at publish
+# with "Missing required credential".
+_CREDENTIAL_TYPE_TYPOS = {"databricksApi": "databricks"}
+
+
+def _check_credential_types(nodes: List[dict]) -> List[str]:
+    """Flags credential types that cannot work on this instance — a provider
+    with no credential at all, or a known-wrong type string. Deterministic, so
+    it can't hallucinate the way an LLM reviewer can: this exact class of bug
+    (a workflow wired to OpenAI, or to `databricksApi`) passed every existing
+    layer because `no_empty_credential_ids` only checks that an id is
+    non-empty, never that the credential TYPE is real."""
+    errors = []
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        for cred_type in (n.get("credentials") or {}):
+            if cred_type in _CREDENTIAL_TYPE_TYPOS:
+                errors.append(
+                    f"Node '{n.get('name')}' uses credential type '{cred_type}', which "
+                    f"does not exist — the correct type is "
+                    f"'{_CREDENTIAL_TYPE_TYPOS[cred_type]}'."
+                )
+            elif cred_type in _UNAVAILABLE_CREDENTIAL_TYPES:
+                errors.append(
+                    f"Node '{n.get('name')}' uses credential type '{cred_type}', but no "
+                    f"such credential exists on this platform — this is a hallucinated "
+                    f"integration. Only Gmail, Google Sheets/Docs/Drive/Slides/Calendar, "
+                    f"Jira, Slack and Databricks credentials are available."
+                )
+    return errors
+
+
+def _check_merge_input_count(nodes: List[dict], connections: dict) -> List[str]:
+    """Merge supports numberInputs 2-10, so wiring 3+ branches is fine — but
+    only if numberInputs actually says so. Checked deterministically because an
+    LLM reviewer got this exactly backwards (claiming Merge accepts only two
+    inputs and silently drops the third), turning correct workflows into
+    reported bugs."""
+    errors = []
+    wired = {}
+    for _src, conn_type, _oi, target, in_idx in _iter_connection_targets(connections):
+        if conn_type == "main":
+            wired.setdefault(target, set()).add(in_idx)
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("type") != "n8n-nodes-base.merge":
+            continue
+        name = n.get("name")
+        used = wired.get(name, set())
+        if not used:
+            continue
+        declared = (n.get("parameters") or {}).get("numberInputs")
+        needed = max(used) + 1
+        if needed > 2 and not isinstance(declared, int):
+            errors.append(
+                f"Merge node '{name}' has {needed} input branches wired (indices "
+                f"{sorted(used)}) but does not set 'numberInputs'. It defaults to 2, so "
+                f"branch(es) at index >= 2 will never be merged. Set "
+                f"parameters.numberInputs to {needed} (valid range 2-10)."
+            )
+        elif isinstance(declared, int) and needed > declared:
+            errors.append(
+                f"Merge node '{name}' has {needed} input branches wired (indices "
+                f"{sorted(used)}) but numberInputs is {declared}. Inputs at index >= "
+                f"{declared} are dropped. Set numberInputs to {needed} (valid range 2-10)."
+            )
+    return errors
+
+
+# Outbound sends that require the mandatory approval gate, by node type ->
+# the parameter values that make it an actual outbound send (vs. a read).
+_SLACK_SEND_OPS = {"post", "postEphemeral", "sendAndWait", "update"}
+_GMAIL_SEND_OPS = {"send", "reply", "sendAndWait"}
+_APPROVAL_WORKFLOW_ID = "aytM7Ef6tOKiGRTQ"
+
+
+def _check_approval_gate(nodes: List[dict], connections: dict) -> List[str]:
+    """Every outbound Slack message or email send must have the approval
+    sub-workflow upstream of it. Mechanically checkable — walk backwards over
+    'main' edges from each send node looking for the Execute Workflow call to
+    the approval sub-workflow — so it doesn't need a judgment call. Returned as
+    warnings by the caller rather than hard errors: it's a platform policy rule,
+    not an n8n schema rule, and a workflow that violates it is still valid JSON
+    that would import."""
+    by_name = {n.get("name"): n for n in nodes if isinstance(n, dict)}
+    back = {}
+    for src, conn_type, _oi, target, _ii in _iter_connection_targets(connections):
+        if conn_type == "main":
+            back.setdefault(target, set()).add(src)
+
+    def has_gate_upstream(start: str) -> bool:
+        seen, frontier = set(), [start]
+        while frontier:
+            cur = frontier.pop()
+            for prev in back.get(cur, ()):
+                if prev in seen:
+                    continue
+                seen.add(prev)
+                node = by_name.get(prev) or {}
+                if node.get("type") == "n8n-nodes-base.executeWorkflow":
+                    wf = (node.get("parameters") or {}).get("workflowId")
+                    val = wf.get("value") if isinstance(wf, dict) else wf
+                    if val == _APPROVAL_WORKFLOW_ID:
+                        return True
+                frontier.append(prev)
+        return False
+
+    warnings = []
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        ntype, params = n.get("type"), (n.get("parameters") or {})
+        op = params.get("operation")
+        is_send = (
+            (ntype == "n8n-nodes-base.slack"
+             and params.get("resource", "message") == "message" and op in _SLACK_SEND_OPS)
+            or (ntype == "n8n-nodes-base.gmail" and op in _GMAIL_SEND_OPS)
+        )
+        if is_send and not has_gate_upstream(n.get("name")):
+            warnings.append(
+                f"Node '{n.get('name')}' ({ntype}, operation '{op}') sends an outbound "
+                f"message but has no approval gate upstream — no Execute Workflow call to "
+                f"the approval sub-workflow ({_APPROVAL_WORKFLOW_ID}) reaches it. Every "
+                f"outbound Slack message and email send requires the mandatory gate."
+            )
+    return warnings
+
+
 def _check_subnode_connections(nodes: List[dict], connections: dict) -> List[str]:
     """A sub-node (Model/Memory/Tool/Output Parser) can be present in `nodes`
     and even appear as a connections KEY, but still be functionally
@@ -702,9 +844,61 @@ def validate_workflow_json(text: str) -> StructuralResult:
     checks["no_invalid_parameter_values"] = len(schema_findings["invalid_values"]) == 0
     checks["no_dangling_node_references"] = len(schema_findings["dangling_refs"]) == 0
     checks["no_unknown_node_types"] = len(schema_findings["unknown_node_types"]) == 0
-    checks["no_unknown_type_versions"] = len(schema_findings["unknown_type_versions"]) == 0
-    for findings in schema_findings.values():
-        result.errors.extend(findings)
+
+    # typeVersion findings are split by severity instead of all being hard
+    # errors, because the version list they're checked against comes from the
+    # LOCALLY INSTALLED n8n-nodes-base, which can lag the live n8n instance.
+    # This was not hypothetical: the local package caps gmailTrigger at 1.3
+    # while the live instance reports 1.4, so every workflow correctly using
+    # 1.4 was being marked structurally invalid by a stale checker. A stale
+    # local package must never be able to fail a workflow that the real
+    # instance would accept.
+    #
+    # Same MAJOR version, unknown minor (1.4 vs known [1, 1.1, 1.2, 1.3]) is
+    # overwhelmingly a newer node revision we haven't got locally -> warning.
+    # An unknown MAJOR (v7 of a node whose majors are 1-2) can't be explained
+    # by staleness and is a real fabrication -> error.
+    stale_version_warnings, real_version_errors = [], []
+    for finding in schema_findings["unknown_type_versions"]:
+        used = re.search(r"uses typeVersion ([0-9.]+)", finding)
+        known = re.search(r"known: \[([0-9.,\s]+)\]", finding)
+        significant = True
+        if used and known:
+            try:
+                u = float(used.group(1))
+                ks = [float(x) for x in known.group(1).split(",") if x.strip()]
+                significant = int(u) not in {int(k) for k in ks}
+            except ValueError:
+                significant = True
+        (real_version_errors if significant else stale_version_warnings).append(finding)
+
+    checks["no_unknown_type_versions"] = len(real_version_errors) == 0
+    result.errors.extend(real_version_errors)
+    result.warnings.extend(
+        f"{f} — treated as advisory, not a failure: the local n8n-nodes-base "
+        f"package may simply be older than the live n8n instance."
+        for f in stale_version_warnings
+    )
+
+    for key, findings in schema_findings.items():
+        if key != "unknown_type_versions":
+            result.errors.extend(findings)
+
+    # Deterministic checks for things an LLM reviewer demonstrably gets wrong
+    # (see each function's docstring for the specific failure it replaces).
+    credential_errors = _check_credential_types(nodes)
+    checks["no_unavailable_credential_types"] = len(credential_errors) == 0
+    result.errors.extend(credential_errors)
+
+    merge_errors = _check_merge_input_count(nodes, connections)
+    checks["merge_input_count_matches_wiring"] = len(merge_errors) == 0
+    result.errors.extend(merge_errors)
+
+    # Warning, not error: platform policy rather than n8n schema — the JSON
+    # still imports and runs, it just skips a gate it shouldn't.
+    approval_warnings = _check_approval_gate(nodes, connections)
+    checks["outbound_sends_have_approval_gate"] = len(approval_warnings) == 0
+    result.warnings.extend(approval_warnings)
 
     # Deeper graph-soundness checks (see the block above _iter_connection_targets
     # for why these catch things no_disconnected_nodes/ai_agents_have_model miss).

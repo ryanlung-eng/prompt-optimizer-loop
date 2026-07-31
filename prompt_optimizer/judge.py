@@ -97,6 +97,45 @@ def _loads_lenient(snippet: str) -> dict:
     return value
 
 
+# Phrases marking an "issue" that concluded there ISN'T one. The reviewer
+# emitted these verbatim inside the issues array (two in a single scenario in
+# the last run), inflating counts with its own scratch work.
+_NON_ISSUE_MARKERS = (
+    "no issue here", "not a bug", "this is fine", "this chain is fine",
+    "no problem here",
+)
+
+
+def _normalize_issues(raw) -> Tuple[List[str], List[str]]:
+    """
+    Returns (all_issues, blockers) as display strings.
+
+    Accepts the structured form ({severity, node, issue}) AND a bare string,
+    so an endpoint that ignores the schema still yields usable output instead
+    of an empty review. A bare string is counted as "defect": unknown severity
+    must not silently become a blocker (inflating the headline metric) nor a
+    nit (hiding a real failure).
+    """
+    all_issues, blockers = [], []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, dict):
+            severity = str(item.get("severity", "defect")).strip().lower()
+            node = str(item.get("node", "")).strip()
+            text = str(item.get("issue", "")).strip()
+        else:
+            severity, node, text = "defect", "", str(item).strip()
+        if not text or any(m in text.lower() for m in _NON_ISSUE_MARKERS):
+            continue
+        if severity not in ("blocker", "defect", "nit"):
+            severity = "defect"
+        label = f"[{severity.upper()}]"
+        formatted = f"{label} {node}: {text}" if node else f"{label} {text}"
+        all_issues.append(formatted)
+        if severity == "blocker":
+            blockers.append(formatted)
+    return all_issues, blockers
+
+
 def _format_transcript(transcript: List[dict]) -> str:
     """Renders the multi-turn transcript as readable User:/Assistant: turns,
     so the judge can verify claims against what actually happened in the
@@ -402,14 +441,44 @@ this workflow, AS DESIGNED, actually do the right thing when it runs.
 If you find nothing wrong, return an empty list — do not invent issues to have
 something to say.
 
+SEVERITY — every issue MUST carry one, and the distinction is the point of this
+review. A flat list where "no retry on this HTTP call" sits beside "infinite
+loop" is useless: it makes every workflow look equally broken and gives no
+signal about whether anything improved.
+  * "blocker" — the workflow will NOT do what the user asked. Infinite/self
+    trigger loops; a node that errors or no-ops at runtime; data the next node
+    needs that isn't there; a required pattern (e.g. the approval gate) absent;
+    an operation that doesn't do what its name implies. If it ships, the user
+    gets a broken automation.
+  * "defect" — a real bug, but the workflow still substantially works or fails
+    safely. Wrong field logged, a branch handling two cases identically when
+    three were asked for, a fragile-but-usually-correct parse.
+  * "nit" — engineering preference, not a defect. Missing retry/error handling,
+    "reads the whole sheet each time so won't scale", "a Merge node would be
+    cleaner". Real observations, but the workflow does what was asked.
+
+Bias toward "defect" over "blocker" when unsure. A blocker asserts this WILL
+fail — only claim it when you can name the node and the exact mechanism.
+
+EVERY issue must name the specific node in the "node" field. If you cannot
+point at a node, you do not understand the problem well enough to report it —
+leave it out.
+
+Do NOT emit an entry that concludes there is no problem. If your analysis ends
+in "this is fine" / "no issue here" / "not a bug", omit it entirely. The list is
+for problems, not for narrating what you checked.
+
 CRITICAL: Output raw JSON only, starting with { and ending with }. No markdown,
 no code fences, no explanations before or after.
 
 {
-  "issues": ["<one specific, concrete design/logic problem — name the node(s) involved
-    and exactly what's wrong, e.g. 'Slack Trigger fires on trigger:[\\"message\\"] with no
-    bot_id check, and Send Slack Message posts to the same channel — the bot's own
-    message will re-trigger this workflow.'>", ...],
+  "issues": [
+    {
+      "severity": "blocker" | "defect" | "nit",
+      "node": "<exact name of the node this is about>",
+      "issue": "<the specific problem and the mechanism by which it fails>"
+    }
+  ],
   "would_approve": true or false
 }"""
 
@@ -476,6 +545,12 @@ class EvalResult:
     # pedantic-but-true nits. None when the review didn't run or the model
     # omitted the field.
     soundness_would_approve: Optional[bool] = None
+    # Only severity=blocker issues — the headline soundness signal.
+    # "zero issues of any severity" proved unreachable: it read 0/N for
+    # every arm in four straight runs because nits ("no retry on this
+    # call") are scored identically to infinite loops, so it could not
+    # distinguish arms the judge score clearly separates.
+    soundness_blockers: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         pass   # weighted_score set by judge after creation
@@ -575,16 +650,16 @@ class DatabricksJudge:
         client: httpx.AsyncClient,
         inp: SyntheticInput,
         actual_response: str,
-    ) -> Tuple[List[str], bool, Optional[bool]]:
+    ) -> Tuple[List[str], bool, Optional[bool], List[str]]:
         """Layer 3: adversarial design/logic review, separate call from the
         scoring judge above. Only worth running when there's an actual
         workflow to review — skipped for OOD (nothing was or should have been
         built) and for responses with no parseable JSON at all."""
         if inp.is_ood:
-            return [], False, None
+            return [], False, None, []
         start, end = actual_response.find("{"), actual_response.rfind("}")
         if start == -1 or end == -1 or end < start:
-            return [], False, None
+            return [], False, None, []
         workflow_json = actual_response[start:end + 1]
 
         user = _WORKFLOW_SOUNDNESS_USER_TEMPLATE.format(
@@ -594,7 +669,7 @@ class DatabricksJudge:
         )
         try:
             parsed = await self._call(client, _WORKFLOW_SOUNDNESS_SYSTEM, user)
-            issues = parsed.get("issues", [])
+            issues, blockers = _normalize_issues(parsed.get("issues", []))
             # would_approve was being requested in the schema and then thrown
             # away. It matters because "zero issues found" is an extremely
             # strict bar — this reviewer routinely lists pedantic-but-true
@@ -605,13 +680,14 @@ class DatabricksJudge:
             # all-or-nothing view of the same review.
             would_approve = parsed.get("would_approve")
             return (
-                (issues if isinstance(issues, list) else []),
+                issues,
                 True,
                 bool(would_approve) if isinstance(would_approve, bool) else None,
+                blockers,
             )
         except Exception as e:
             print(f"  Warning: soundness review failed for '{inp.text[:60]}…': {_unwrap(e)}")
-            return [], False, None
+            return [], False, None, []
 
     async def evaluate_one(
         self,
@@ -641,9 +717,10 @@ class DatabricksJudge:
             hallucinated = []
             comment = f"Judge error: {cause}"
 
-        soundness_issues, soundness_reviewed, soundness_would_approve = await self._review_soundness(
-            client, inp, actual_response
-        )
+        (
+            soundness_issues, soundness_reviewed,
+            soundness_would_approve, soundness_blockers,
+        ) = await self._review_soundness(client, inp, actual_response)
 
         result = EvalResult(
             input=inp,
@@ -657,6 +734,7 @@ class DatabricksJudge:
             soundness_issues=soundness_issues,
             soundness_reviewed=soundness_reviewed,
             soundness_would_approve=soundness_would_approve,
+            soundness_blockers=soundness_blockers,
         )
         result.weighted_score = _weighted_score(scores, self._judge_config.dimensions)
         return result

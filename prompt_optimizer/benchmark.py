@@ -333,7 +333,25 @@ def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names:
     # requires a `{`...`}` span in the response); an arm with a lot of outright
     # failures (HTTP errors, pure-prose non-attempts) will show a smaller M,
     # which is itself a signal, not a discrepancy to reconcile against N.
-    sound_row = ["Sound (zero issues found)"]
+    # Headline soundness signal. "Zero issues of any severity" (kept below for
+    # continuity) read 0/N for every arm in four consecutive runs, because the
+    # reviewer lists 3-7 findings per workflow and scores "no retry on this
+    # HTTP call" identically to "infinite loop" — so it could not separate arms
+    # the judge score clearly does. Blockers are the subset that mean the
+    # workflow will not do what was asked.
+    blocker_row = ["Blocker-free (no severity=blocker)"]
+    for arm in _HARD_ARMS:
+        reviewed = [x for x in results[arm] if x.soundness_reviewed]
+        clean = sum(1 for x in reviewed if not x.soundness_blockers)
+        blocker_row.append(f"{clean}/{len(reviewed)} reviewed" if reviewed else "n/a")
+    table.add_row(*blocker_row)
+
+    total_blockers = ["Blockers (total)"]
+    for arm in _HARD_ARMS:
+        total_blockers.append(str(sum(len(x.soundness_blockers) for x in results[arm])))
+    table.add_row(*total_blockers)
+
+    sound_row = ["Sound (zero issues, any severity)"]
     for arm in _HARD_ARMS:
         reviewed = [x for x in results[arm] if x.soundness_reviewed]
         sound = sum(1 for x in reviewed if not x.soundness_issues)

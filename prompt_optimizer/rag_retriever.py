@@ -82,6 +82,25 @@ class RAGConfig:
         "n8nNodeCatalog-databricks",
         "n8nNodeCatalog-ai_agent",
     )
+    # Sources injected UNCONDITIONALLY, before the query is even considered.
+    #
+    # protected_sources alone was not enough, and the benchmark proved it: it
+    # can only re-add a chunk that retrieval already surfaced and the filter
+    # then dropped. For a query like "classify support emails", the Databricks
+    # chat-model chunk never enters the top-K at all, so there is nothing to
+    # protect — and the filtered arm produced 8 workflows wired to OpenAI
+    # (a provider with no credential here) against 1 for the unfiltered arm.
+    #
+    # Deliberately NARROWER than protected_sources: only the two docs that
+    # answer "which credential and which node type do I use for an LLM here",
+    # since this cost is paid on every single request.
+    always_inject_sources: tuple = (
+        "n8nNodeCatalog-credentials",
+        "n8nNodeCatalog-databricks",
+    )
+    # Hard cap on always-injected chunks so the fixed cost stays bounded —
+    # those two sources are ~7 chunks total and we only need the wiring ones.
+    max_always_inject_chunks: int = 4
 
 
 @dataclass
@@ -134,6 +153,46 @@ def retrieve_chunks(query_text: str, config: RAGConfig = RAGConfig()) -> List[Re
         if len(selected) >= config.top_k:
             break
     return selected
+
+
+# Fixed query used only to LOCATE the always-inject chunks. Retrieval is still
+# the mechanism (no new SDK surface, no direct Delta read from this module),
+# but the query is constant and the results are filtered to
+# always_inject_sources — so what comes back does not depend on the user's
+# request, which is the entire point.
+_INFRA_QUERY = (
+    "Databricks chat model sub-node credential type, credential ID table, "
+    "AI Agent language model connection wiring"
+)
+
+
+def retrieve_always_injected(config: RAGConfig = RAGConfig()) -> List[RetrievedChunk]:
+    """
+    Chunks that must be present for EVERY request regardless of what was
+    asked — which credentials exist and how to wire the Databricks chat
+    model. Returns [] on any failure: missing grounding degrades output,
+    but a retrieval error here must never fail the whole request.
+    """
+    sources = tuple(getattr(config, "always_inject_sources", ()) or ())
+    if not sources:
+        return []
+    try:
+        index = _get_index(config)
+        results = index.similarity_search(
+            query_text=_INFRA_QUERY,
+            columns=["id", "title", "text", "source"],
+            num_results=config.top_k * config.over_fetch_multiplier,
+            query_type=config.query_type,
+        )
+        rows = results["result"]["data_array"]
+    except Exception as e:
+        print(f"  Warning: always-inject retrieval failed ({e}) — continuing without it.")
+        return []
+    hits = [
+        RetrievedChunk(id=r[0], title=r[1], text=r[2], source=r[3])
+        for r in rows if r[3] in sources
+    ]
+    return hits[: config.max_always_inject_chunks]
 
 
 def format_chunks(chunks: List[RetrievedChunk], max_context_chars: int) -> str:

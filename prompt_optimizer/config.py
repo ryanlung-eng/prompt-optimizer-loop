@@ -175,6 +175,12 @@ def load_config(path: str = "config.yaml") -> Config:
         protected_sources=tuple(
             rag_raw.get("protected_sources", RAGConfig.protected_sources)
         ),
+        always_inject_sources=tuple(
+            rag_raw.get("always_inject_sources", RAGConfig.always_inject_sources)
+        ),
+        max_always_inject_chunks=rag_raw.get(
+            "max_always_inject_chunks", RAGConfig.max_always_inject_chunks
+        ),
     )
 
     return Config(prompts=prompts, databricks=databricks, synthetic_data=synthetic_data,

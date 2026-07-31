@@ -23,7 +23,9 @@ from typing import List, Tuple
 
 import httpx
 
-from .rag_retriever import RAGConfig, RetrievedChunk, format_chunks, retrieve_chunks
+from .rag_retriever import (
+    RAGConfig, RetrievedChunk, format_chunks, retrieve_chunks, retrieve_always_injected,
+)
 from .relevance_filter import filter_relevant_chunks
 
 GROUNDING_NOTE = (
@@ -65,12 +67,22 @@ async def retrieve_and_filter(
     protected = tuple(getattr(rag_config, "protected_sources", ()) or ())
     if protected:
         kept_ids = {c.id for c in result.kept}
-        merged = [
-            c for c in retrieved
-            if c.id in kept_ids or c.source in protected
-        ]
-        return retrieved, merged
-    return retrieved, result.kept
+        kept = [c for c in retrieved if c.id in kept_ids or c.source in protected]
+    else:
+        kept = list(result.kept)
+
+    # Always-inject runs on a FIXED query, so it does not depend on what the
+    # user asked and cannot be starved by a request that makes infrastructure
+    # look irrelevant — the failure protected_sources could not cover, since
+    # that only rescues chunks retrieval already returned. Prepended (not
+    # appended) because format_chunks trims from the END when the character
+    # budget is hit, and this grounding must survive that trim.
+    infra = retrieve_always_injected(rag_config)
+    if infra:
+        have = {c.id for c in kept}
+        kept = [c for c in infra if c.id not in have] + kept
+
+    return retrieved, kept
 
 
 def build_retrieved_block(kept: List[RetrievedChunk], n_retrieved: int, rag_config: RAGConfig) -> str:

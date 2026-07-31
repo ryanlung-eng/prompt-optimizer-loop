@@ -163,6 +163,15 @@ rag:
     - "n8nNodeCatalog-credentials"
     - "n8nNodeCatalog-databricks"
     - "n8nNodeCatalog-ai_agent"
+  # Injected on EVERY request via a fixed query, regardless of what was asked.
+  # protected_sources alone couldn't fix the OpenAI hallucination because it
+  # only rescues chunks retrieval already surfaced — and "classify support
+  # emails" never surfaces the Databricks chat-model chunk at all. Narrower
+  # than protected_sources since this cost is paid every request.
+  always_inject_sources:
+    - "n8nNodeCatalog-credentials"
+    - "n8nNodeCatalog-databricks"
+  max_always_inject_chunks: 4
 
 optimizer:
   score_threshold: 0.85

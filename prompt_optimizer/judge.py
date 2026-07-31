@@ -81,7 +81,16 @@ def _loads_lenient(snippet: str) -> dict:
         pass
 
     repaired = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)', r'\1"\2"\3', snippet)
-    value = json.loads(repaired)
+    try:
+        value = json.loads(repaired)
+    except json.JSONDecodeError as e:
+        # Include the actual text — a bare character offset gives no way to
+        # tell WHICH deviation happened, which is exactly the position this
+        # left us in the first time.
+        raise ValueError(
+            f"Could not parse judge output even after repair ({e}). "
+            f"Raw snippet: {snippet[:400]!r}"
+        ) from None
     if not isinstance(value, dict):
         raise ValueError(f"Parsed value is {type(value).__name__}, not an object")
     print("  Note: judge emitted bare (unquoted) object keys instead of JSON — repaired.")
@@ -572,10 +581,10 @@ class DatabricksJudge:
         workflow to review — skipped for OOD (nothing was or should have been
         built) and for responses with no parseable JSON at all."""
         if inp.is_ood:
-            return [], False
+            return [], False, None
         start, end = actual_response.find("{"), actual_response.rfind("}")
         if start == -1 or end == -1 or end < start:
-            return [], False
+            return [], False, None
         workflow_json = actual_response[start:end + 1]
 
         user = _WORKFLOW_SOUNDNESS_USER_TEMPLATE.format(

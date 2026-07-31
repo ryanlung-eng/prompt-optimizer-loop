@@ -577,6 +577,14 @@ class WorkflowEvaluator:
         _repair_rag_config = _dc_replace(rag_config, top_k=3, max_context_chars=4000)
 
         async def _retrieve_on_repair(error_text: str) -> str:
+            # Belt-and-braces: an empty query makes Databricks AI Search raise
+            # "Query text is required when reranking is enabled" and kills the
+            # whole eval for that input. The root cause (a check that failed
+            # .valid without appending to .errors) is fixed in validator.py,
+            # but nothing downstream should be able to turn a caller's empty
+            # string into a hard failure of the run.
+            if not (error_text or "").strip():
+                return ""
             return await asyncio.to_thread(retrieve_context, error_text, _repair_rag_config)
 
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
@@ -667,6 +675,14 @@ class WorkflowEvaluator:
         _repair_rag_config = _dc_replace(rag_config, top_k=3, max_context_chars=4000)
 
         async def _retrieve_on_repair(error_text: str) -> str:
+            # Belt-and-braces: an empty query makes Databricks AI Search raise
+            # "Query text is required when reranking is enabled" and kills the
+            # whole eval for that input. The root cause (a check that failed
+            # .valid without appending to .errors) is fixed in validator.py,
+            # but nothing downstream should be able to turn a caller's empty
+            # string into a hard failure of the run.
+            if not (error_text or "").strip():
+                return ""
             return await asyncio.to_thread(retrieve_context, error_text, _repair_rag_config)
 
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:

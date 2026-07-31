@@ -896,9 +896,15 @@ def validate_workflow_json(text: str) -> StructuralResult:
 
     # Warning, not error: platform policy rather than n8n schema — the JSON
     # still imports and runs, it just skips a gate it shouldn't.
-    approval_warnings = _check_approval_gate(nodes, connections)
-    checks["outbound_sends_have_approval_gate"] = len(approval_warnings) == 0
-    result.warnings.extend(approval_warnings)
+    #
+    # Deliberately NOT registered in `checks`. StructuralResult.valid is
+    # `all(checks.values())`, so adding a key here would flip .valid to False
+    # while leaving `errors` empty — and _run_conversation derives its repair
+    # message from `errors`, so it would feed an EMPTY string back as the
+    # retrieval query ("Query text is required when reranking is enabled").
+    # Warnings must never affect .valid; that contract is documented on the
+    # StructuralResult.warnings field itself.
+    result.warnings.extend(_check_approval_gate(nodes, connections))
 
     # Deeper graph-soundness checks (see the block above _iter_connection_targets
     # for why these catch things no_disconnected_nodes/ai_agents_have_model miss).

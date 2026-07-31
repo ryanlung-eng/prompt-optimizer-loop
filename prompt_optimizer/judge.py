@@ -313,10 +313,10 @@ these override them. Flagging any of the following as a bug is a false positive:
     the CORRECT, documented, preferred trigger-level anti-loop guard, and when
     the trigger handles it no separate downstream filter node is needed. Do
     NOT claim this is "backwards", "an inclusion filter", or that it makes the
-    workflow fire only on the bot's own messages. (Telegram's
-    `additionalFields.userIds` IS an allowlist — do not carry that over to
-    Slack.) A Slack self-loop is only a real finding when there is NO bot ID in
-    `options.userIds` AND no equivalent downstream bot/subtype check.
+    workflow fire only on the bot's own messages — other chat platforms use a
+    same-named field as an allowlist, but Slack does not. A Slack self-loop is
+    only a real finding when there is NO bot ID in `options.userIds` AND no
+    equivalent downstream bot/subtype check.
   • The Merge node supports `numberInputs` of 2 THROUGH 10 — three or more
     inputs is fully supported and normal. Do NOT claim it "only accepts two
     inputs" or that a third branch is silently dropped. Only flag input wiring

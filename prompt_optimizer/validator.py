@@ -411,6 +411,63 @@ def _check_merge_input_count(nodes: List[dict], connections: dict) -> List[str]:
     return errors
 
 
+def _find_empty_resource_locators(obj, node_name: str, node_type: str, path: str = "") -> List[str]:
+    findings = []
+    if isinstance(obj, dict):
+        if obj.get("__rl") is True:
+            value = obj.get("value")
+            if value is None or (isinstance(value, str) and value.strip() == ""):
+                findings.append(
+                    f"Node '{node_name}' ({node_type}) has an empty resource-locator "
+                    f"value at 'parameters.{path or '(root)'}' (mode={obj.get('mode')!r}). "
+                    f"This is a genuine runtime failure, not a placeholder — n8n has "
+                    f"nothing to resolve and will error when this node executes."
+                )
+        for k, v in obj.items():
+            if k == "__rl":
+                continue
+            findings.extend(
+                _find_empty_resource_locators(v, node_name, node_type, f"{path}.{k}" if path else k)
+            )
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            findings.extend(
+                _find_empty_resource_locators(item, node_name, node_type, f"{path}[{i}]")
+            )
+    return findings
+
+
+def _check_empty_resource_locators(nodes: List[dict]) -> List[str]:
+    """
+    Flags a resource-locator field (the {"__rl": true, "mode": ..., "value":
+    ...} shape used by Google Sheets/Drive/Calendar, Slack channel pickers,
+    etc.) whose value is literally empty or missing, as its own distinct
+    category from a labeled placeholder like "YOUR_SPREADSHEET_ID".
+
+    The distinction matters and is deliberate, not pedantic: a labeled
+    placeholder is self-documenting to whoever opens the workflow next, and
+    the platform's own knowledge_honesty rule already treats inventing a
+    plausible placeholder ID as acceptable, necessary behavior (the model has
+    no directory lookup and n8n JSON requires SOME string). A bare "" gives
+    the next person nothing to go on and is a strictly worse failure mode —
+    also confirmed repeatedly in soundness review output as a hard runtime
+    error ("documentId is empty string ... will fail at runtime"), so it's
+    exactly as deterministic and checkable as a wrong credential type.
+
+    This does NOT flag placeholder-style non-empty strings — recognizing
+    "looks like a placeholder" from a legitimate short/unusual real ID is a
+    fuzzy judgment call this function deliberately stays out of.
+    """
+    errors = []
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        errors.extend(
+            _find_empty_resource_locators(n.get("parameters") or {}, n.get("name"), n.get("type"))
+        )
+    return errors
+
+
 # Outbound sends that require the mandatory approval gate, by node type ->
 # the parameter values that make it an actual outbound send (vs. a read).
 _SLACK_SEND_OPS = {"post", "postEphemeral", "sendAndWait", "update"}
@@ -893,6 +950,10 @@ def validate_workflow_json(text: str) -> StructuralResult:
     merge_errors = _check_merge_input_count(nodes, connections)
     checks["merge_input_count_matches_wiring"] = len(merge_errors) == 0
     result.errors.extend(merge_errors)
+
+    rl_errors = _check_empty_resource_locators(nodes)
+    checks["no_empty_resource_locator_values"] = len(rl_errors) == 0
+    result.errors.extend(rl_errors)
 
     # Warning, not error: platform policy rather than n8n schema — the JSON
     # still imports and runs, it just skips a gate it shouldn't.

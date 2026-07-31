@@ -303,6 +303,36 @@ update, Google Docs update, Google Drive upload, Google Slides presentation, or
 Google Calendar event on its own — none of those send a message to a person, so
 DO flag a gate added around one of those alone.
 
+VERIFIED NODE FACTS — these come from this platform's knowledge base, several
+confirmed against n8n's own source. Your priors about these nodes are WRONG;
+these override them. Flagging any of the following as a bug is a false positive:
+  • Slack Trigger's `options.userIds` is an EXCLUSION list, not an inclusion/
+    allowlist. Users listed there are DROPPED before the workflow runs
+    (verified in the trigger handler: it returns early when
+    `userIds.includes(event.user)`). Putting the bot's own user ID there is
+    the CORRECT, documented, preferred trigger-level anti-loop guard, and when
+    the trigger handles it no separate downstream filter node is needed. Do
+    NOT claim this is "backwards", "an inclusion filter", or that it makes the
+    workflow fire only on the bot's own messages. (Telegram's
+    `additionalFields.userIds` IS an allowlist — do not carry that over to
+    Slack.) A Slack self-loop is only a real finding when there is NO bot ID in
+    `options.userIds` AND no equivalent downstream bot/subtype check.
+  • The Merge node supports `numberInputs` of 2 THROUGH 10 — three or more
+    inputs is fully supported and normal. Do NOT claim it "only accepts two
+    inputs" or that a third branch is silently dropped. Only flag input wiring
+    if `numberInputs` is missing or does not match how many branches are
+    actually wired.
+  • Split In Batches outputs are ordered index 0 = "done", index 1 = "loop"
+    (the reverse of the common assumption, confirmed from
+    SplitInBatchesV3.node.ts `outputNames: ['done', 'loop']`). Wiring the
+    per-batch processing branch to index 1 and the after-the-loop branch to
+    index 0 is CORRECT.
+
+If you are not certain a claim about node behavior is true, leave it out. A
+confident-sounding wrong finding is worse than a missed one — these reviews are
+used to decide what to change, so a false positive sends real work in the wrong
+direction.
+
 Do NOT re-flag things a deterministic parameter/enum/connectivity checker would
 already catch (invented parameter names, disconnected nodes, wrong credential
 IDs) — assume those are handled elsewhere. Focus only on judgment calls: would

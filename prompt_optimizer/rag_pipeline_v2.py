@@ -46,11 +46,30 @@ async def retrieve_and_filter(
     filters them down via an LLM call before the caller formats/budget-trims
     them — instead of handing every retrieved chunk straight to generation.
     Returns (retrieved, kept) so the caller can report how many were dropped.
+
+    Chunks from rag_config.protected_sources are re-added after filtering if
+    the filter dropped them (see that field for the full rationale): they
+    cover platform infrastructure needed by EVERY workflow — which
+    credentials exist, how to wire the Databricks chat model — but are never
+    topically "about" the request, so a filter selecting for direct relevance
+    reliably discards them and the model falls back to hallucinated OpenAI
+    nodes. Restored chunks keep their original retrieval rank rather than
+    being appended, so the best-first ordering format_chunks() relies on for
+    budget-trimming still holds.
     """
     retrieved = retrieve_chunks(query_text, rag_config)
     if not retrieved:
         return [], []
     result = await filter_relevant_chunks(client, filter_endpoint_url, filter_headers, query_text, retrieved)
+
+    protected = tuple(getattr(rag_config, "protected_sources", ()) or ())
+    if protected:
+        kept_ids = {c.id for c in result.kept}
+        merged = [
+            c for c in retrieved
+            if c.id in kept_ids or c.source in protected
+        ]
+        return retrieved, merged
     return retrieved, result.kept
 
 

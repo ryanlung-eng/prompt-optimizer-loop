@@ -170,6 +170,11 @@ def load_config(path: str = "config.yaml") -> Config:
         generation_endpoint=rag_raw.get("generation_endpoint", "databricks-claude-sonnet-4-6"),
         max_chunks_per_source=rag_raw.get("max_chunks_per_source", 4),
         over_fetch_multiplier=rag_raw.get("over_fetch_multiplier", 3),
+        # tuple() so it stays hashable/immutable like the dataclass default;
+        # omitting the key keeps the default set rather than disabling pinning.
+        protected_sources=tuple(
+            rag_raw.get("protected_sources", RAGConfig.protected_sources)
+        ),
     )
 
     return Config(prompts=prompts, databricks=databricks, synthetic_data=synthetic_data,

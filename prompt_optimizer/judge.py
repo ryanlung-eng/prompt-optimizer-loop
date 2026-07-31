@@ -22,7 +22,7 @@ of workflow construction. knowledge_honesty is the most important dimension for 
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
@@ -380,6 +380,11 @@ class EvalResult:
     # (e.g. non-JSON response) — check `soundness_reviewed` to tell those apart.
     soundness_issues: List[str] = field(default_factory=list)
     soundness_reviewed: bool = False
+    # The reviewer's own ship/no-ship verdict — a less all-or-nothing read
+    # than "zero issues", since the review mixes genuine blockers with
+    # pedantic-but-true nits. None when the review didn't run or the model
+    # omitted the field.
+    soundness_would_approve: Optional[bool] = None
 
     def __post_init__(self):
         pass   # weighted_score set by judge after creation
@@ -479,7 +484,7 @@ class DatabricksJudge:
         client: httpx.AsyncClient,
         inp: SyntheticInput,
         actual_response: str,
-    ) -> Tuple[List[str], bool]:
+    ) -> Tuple[List[str], bool, Optional[bool]]:
         """Layer 3: adversarial design/logic review, separate call from the
         scoring judge above. Only worth running when there's an actual
         workflow to review — skipped for OOD (nothing was or should have been
@@ -499,10 +504,23 @@ class DatabricksJudge:
         try:
             parsed = await self._call(client, _WORKFLOW_SOUNDNESS_SYSTEM, user)
             issues = parsed.get("issues", [])
-            return (issues if isinstance(issues, list) else []), True
+            # would_approve was being requested in the schema and then thrown
+            # away. It matters because "zero issues found" is an extremely
+            # strict bar — this reviewer routinely lists pedantic-but-true
+            # nits ("no retry on this HTTP call") alongside genuine blockers
+            # (infinite loop, broken data flow), so a workflow can be
+            # perfectly shippable and still never score as "sound". Capturing
+            # the reviewer's own ship/no-ship verdict gives a second, less
+            # all-or-nothing view of the same review.
+            would_approve = parsed.get("would_approve")
+            return (
+                (issues if isinstance(issues, list) else []),
+                True,
+                bool(would_approve) if isinstance(would_approve, bool) else None,
+            )
         except Exception as e:
             print(f"  Warning: soundness review failed for '{inp.text[:60]}…': {_unwrap(e)}")
-            return [], False
+            return [], False, None
 
     async def evaluate_one(
         self,
@@ -532,7 +550,9 @@ class DatabricksJudge:
             hallucinated = []
             comment = f"Judge error: {cause}"
 
-        soundness_issues, soundness_reviewed = await self._review_soundness(client, inp, actual_response)
+        soundness_issues, soundness_reviewed, soundness_would_approve = await self._review_soundness(
+            client, inp, actual_response
+        )
 
         result = EvalResult(
             input=inp,
@@ -545,6 +565,7 @@ class DatabricksJudge:
             structural=validate_workflow_json(actual_response),
             soundness_issues=soundness_issues,
             soundness_reviewed=soundness_reviewed,
+            soundness_would_approve=soundness_would_approve,
         )
         result.weighted_score = _weighted_score(scores, self._judge_config.dimensions)
         return result

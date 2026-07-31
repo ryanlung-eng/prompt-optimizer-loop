@@ -62,6 +62,26 @@ class RAGConfig:
     # needs to comfortably exceed top_k so there's still enough of a pool left
     # to fill top_k slots after over-represented sources get capped.
     over_fetch_multiplier: int = 3
+    # Source documents whose retrieved chunks the v2 relevance filter is never
+    # allowed to drop (see rag_pipeline_v2.retrieve_and_filter). These cover
+    # cross-cutting platform infrastructure — which credentials exist, how to
+    # wire the Databricks chat model, how AI Agent sub-node slots connect —
+    # that is required for EVERY workflow but is never topically "about" the
+    # request, so a filter told to keep only chunks that directly answer the
+    # question will discard them.
+    #
+    # Not hypothetical: benchmarking showed the filtered arm falling back to
+    # hallucinated OpenAI nodes (lmChatOpenAi/gpt-4o — no such credential on
+    # this platform) on the exact scenarios where the unfiltered arm correctly
+    # used lmChatDatabricks, because the "Databricks Chat Model Sub-Node"
+    # chunk doesn't look relevant to e.g. "classify support emails".
+    #
+    # Tuple, not list — dataclass defaults must be immutable.
+    protected_sources: tuple = (
+        "n8nNodeCatalog-credentials",
+        "n8nNodeCatalog-databricks",
+        "n8nNodeCatalog-ai_agent",
+    )
 
 
 @dataclass

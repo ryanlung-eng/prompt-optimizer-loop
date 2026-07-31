@@ -250,3 +250,38 @@ for r in results["custom_rag"]:
         print("Soundness issues (Layer 3):", r.soundness_issues)
         print("Actual response:", r.actual_response[:2000])
         print("---")
+
+# COMMAND ----------
+
+# MAGIC %md ### Inspect PRODUCTION's failures too
+# MAGIC Previously never printed, so production's outputs were never actually
+# MAGIC inspected — "production doesn't have problem X" was an assumption, not
+# MAGIC an observation. It scores LOWEST of the three arms on knowledge_honesty,
+# MAGIC so it's worth looking at directly rather than assuming it's clean.
+
+# COMMAND ----------
+
+for r in results["production"]:
+    if not r.structural.valid or r.structural.warnings or r.soundness_issues:
+        print("Scenario:", r.input.category)
+        print("Structural errors:", r.structural.errors)
+        print("Warnings (Layer 2):", r.structural.warnings)
+        print("Soundness issues (Layer 3):", r.soundness_issues)
+        print("Actual response:", r.actual_response[:2000])
+        print("---")
+
+# COMMAND ----------
+
+# MAGIC %md ### Which arms reach for an unavailable provider (OpenAI)?
+# MAGIC Direct per-scenario check — OpenAI is not an available credential on
+# MAGIC this platform, so any hit is a hallucinated integration.
+
+# COMMAND ----------
+
+_MARKERS = ("lmchatopenai", "nodes-langchain.openai", "nodes-base.openai", "gpt-4")
+for arm in ("production", "custom_rag", "custom_rag_v2"):
+    hits = [
+        r.input.category for r in results[arm]
+        if any(m in (r.actual_response or "").lower() for m in _MARKERS)
+    ]
+    print(f"{arm}: {len(hits)} scenario(s) using OpenAI -> {hits}")

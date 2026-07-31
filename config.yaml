@@ -152,6 +152,17 @@ rag:
   max_chunks_per_source: 4
   # Raw candidates fetched before the per-source cap above is applied.
   over_fetch_multiplier: 3
+  # Source docs the v2 relevance filter may never drop — cross-cutting
+  # platform infrastructure (which credentials exist, how to wire the
+  # Databricks chat model, AI Agent sub-node slots) that every workflow needs
+  # but that is never topically "about" the request, so a relevance filter
+  # reliably discards it. Benchmarking showed the filtered arm falling back to
+  # hallucinated OpenAI nodes on exactly the scenarios where the unfiltered
+  # arm used Databricks correctly.
+  protected_sources:
+    - "n8nNodeCatalog-credentials"
+    - "n8nNodeCatalog-databricks"
+    - "n8nNodeCatalog-ai_agent"
 
 optimizer:
   score_threshold: 0.85

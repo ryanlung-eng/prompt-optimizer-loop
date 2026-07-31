@@ -340,6 +340,36 @@ def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names:
         sound_row.append(f"{sound}/{len(reviewed)} reviewed" if reviewed else "n/a")
     table.add_row(*sound_row)
 
+    # "Zero issues" is an extremely strict bar — the reviewer mixes genuine
+    # blockers (infinite loop, broken data flow) with pedantic-but-true nits
+    # ("no retry on this HTTP call"), so a shippable workflow can still never
+    # score as sound, and the row above reads 0/N for every arm regardless of
+    # real differences between them. This is the same review's own ship/no-ship
+    # verdict, which does discriminate.
+    approve_row = ["Reviewer would approve"]
+    for arm in _HARD_ARMS:
+        verdicts = [x for x in results[arm] if x.soundness_would_approve is not None]
+        approved = sum(1 for x in verdicts if x.soundness_would_approve)
+        approve_row.append(f"{approved}/{len(verdicts)} reviewed" if verdicts else "n/a")
+    table.add_row(*approve_row)
+
+    # Hallucinated model-provider check: OpenAI is NOT an available credential
+    # on this platform (config.yaml lists Databricks/Gmail/Sheets/Jira/Slack/
+    # Docs/Drive/Slides/Calendar only), but nothing in Layers 1-3 currently
+    # fails a workflow for using it, so it stayed invisible while the arm doing
+    # it most scored HIGHEST on knowledge_honesty. Surfaced as a report row
+    # rather than a hard validator error so it doesn't silently change the
+    # structural-validity metric mid-comparison.
+    unavailable_row = ["Uses unavailable provider (OpenAI)"]
+    for arm in _HARD_ARMS:
+        hits = sum(
+            1 for x in results[arm]
+            if any(m in (x.actual_response or "").lower()
+                   for m in ("lmchatopenai", "nodes-langchain.openai", "nodes-base.openai", "gpt-4"))
+        )
+        unavailable_row.append(str(hits))
+    table.add_row(*unavailable_row)
+
     console.print(table)
 
 

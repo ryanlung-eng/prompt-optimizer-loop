@@ -19,8 +19,10 @@ completeness above instead of being dropped.
 OOD inputs get a tailored judge prompt that evaluates pushback quality instead
 of workflow construction. knowledge_honesty is the most important dimension for OOD.
 """
+import ast
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -34,6 +36,44 @@ from .validator import StructuralResult, validate_workflow_json
 
 def _unwrap(e: Exception) -> Exception:
     return e.last_attempt.exception() if isinstance(e, RetryError) else e
+
+
+def _loads_lenient(snippet: str) -> dict:
+    """
+    Parses a JSON object the model *meant* to emit, tolerating the two
+    deviations actually observed from these endpoints. This matters beyond
+    tidiness: a parse failure in the soundness review returns
+    soundness_reviewed=False, which silently drops that scenario out of the
+    metric's DENOMINATOR rather than counting it as a failure — so a flaky
+    parser quietly makes the soundness rate look computed over fewer, and
+    different, scenarios than it actually was.
+
+    Observed live: "Expecting property name enclosed in double quotes: line 1
+    column 3 (char 2)" — a JS-style object literal with bare identifier keys
+    ({ issues: [...] }).
+
+    Order matters: strict JSON first (never rewrite something already valid),
+    then Python-dict syntax via a real parser, then bare-key repair. The
+    bare-key regex only fires in key position (after '{' or ','), and if it
+    ever rewrote inside a quoted string it would produce an unescaped quote
+    and fail to parse — so corruption surfaces as an exception rather than as
+    silently mangled review text.
+    """
+    try:
+        return json.loads(snippet)
+    except json.JSONDecodeError:
+        pass
+    try:
+        value = ast.literal_eval(snippet)   # single quotes, True/False/None
+        if isinstance(value, dict):
+            return value
+    except (ValueError, SyntaxError):
+        pass
+    repaired = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)', r'\1"\2"\3', snippet)
+    value = json.loads(repaired)
+    if not isinstance(value, dict):
+        raise ValueError(f"Parsed value is {type(value).__name__}, not an object")
+    return value
 
 
 def _format_transcript(transcript: List[dict]) -> str:
@@ -507,7 +547,7 @@ class DatabricksJudge:
         start, end = content.find("{"), content.rfind("}")
         if start == -1 or end == -1 or end < start:
             raise ValueError(f"No JSON object found in judge response: {content[:1500]}")
-        return json.loads(content[start:end + 1])
+        return _loads_lenient(content[start:end + 1])
 
     async def _review_soundness(
         self,

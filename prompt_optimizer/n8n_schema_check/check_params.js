@@ -414,7 +414,32 @@ function describeProperty(prop) {
     // .options entries are {name, value, ...} - "value" is what actually
     // ends up in node.parameters, "name" is just the UI display label.
     const values = new Set(prop.options.filter((o) => o && "value" in o).map((o) => o.value));
-    return prop.type === "multiOptions" ? { kind: "enumArray", values } : { kind: "enum", values };
+    const enumKind = prop.type === "multiOptions" ? "enumArray" : "enum";
+    // Resource/operation-style fields are commonly declared MULTIPLE times
+    // under the same name, each gated by its own displayOptions.show on a
+    // sibling field (e.g. Slack's "operation" is declared once per
+    // "resource", each with its own, DIFFERENT .options list - message's
+    // operation options don't include "getAll", channel's do). A plain
+    // enum merge (see mergeDescriptors) unions all declarations' values
+    // together, which would silently accept "getAll" for resource=message
+    // too, since it's a real value just for a DIFFERENT resource. Preserve
+    // each declaration's own gate as a branch so it can be checked against
+    // the value's ACTUAL sibling field(s) at validation time instead.
+    const show = prop.displayOptions && prop.displayOptions.show;
+    if (show && typeof show === "object") {
+      const when = {};
+      for (const [field, allowed] of Object.entries(show)) {
+        // A field can't be gated by its own value, and only literal
+        // string-array conditions are usable here (n8n's displayOptions.show
+        // values are always arrays of literals, never expressions).
+        if (field === prop.name || !Array.isArray(allowed)) continue;
+        when[field] = allowed;
+      }
+      if (Object.keys(when).length) {
+        return { kind: "conditionalEnum", enumKind, branches: [{ when, values }] };
+      }
+    }
+    return { kind: enumKind, values };
   }
   // string/number/boolean/json/dateTime/notice/button/dynamic-options/etc. -
   // a primitive value (possibly an expression string, or a value only
@@ -446,10 +471,36 @@ function isPrimitiveKind(d) {
   return d.kind === "leaf" || d.kind === "enum";
 }
 
+// branchesOf: view any enum-ish descriptor as a list of conditionalEnum
+// branches — a plain enum/enumArray becomes a single always-active branch
+// (when: {}, vacuously true for every sibling-field check at validation
+// time), which is exactly the old unconditional-union behavior for any
+// declaration that has no displayOptions.show gate at all.
+function isEnumish(d) {
+  return d.kind === "enum" || d.kind === "enumArray" || d.kind === "conditionalEnum";
+}
+function branchesOf(d) {
+  return d.kind === "conditionalEnum" ? d.branches : [{ when: {}, values: d.values }];
+}
+
 function mergeDescriptors(a, b) {
   if (!a) return b;
   if (!b) return a;
   if (a.kind === "opaque" || b.kind === "opaque") return { kind: "opaque" };
+  if (a.kind === "conditionalEnum" || b.kind === "conditionalEnum") {
+    if (!isEnumish(a) || !isEnumish(b)) {
+      // Same "runtime-discriminable vs not" question as the generic
+      // mismatch logic below, just reached from the conditionalEnum side
+      // first — a leaf paired with an enum-ish field is primitive-shaped
+      // on both sides (not discriminable), so stay permissive; anything
+      // else (object/array) is a genuine shape collision, opaque.
+      if (a.kind === "leaf" || b.kind === "leaf") return { kind: "leaf" };
+      return { kind: "opaque" };
+    }
+    const enumKind = a.enumKind === "enumArray" || b.enumKind === "enumArray" || a.kind === "enumArray" || b.kind === "enumArray"
+      ? "enumArray" : "enum";
+    return { kind: "conditionalEnum", enumKind, branches: [...branchesOf(a), ...branchesOf(b)] };
+  }
   if (a.kind !== b.kind) {
     // Runtime-discriminable split: one side an object, the other a primitive.
     const obj = a.kind === "object" ? a : b.kind === "object" ? b : null;
@@ -563,8 +614,52 @@ function findMismatches(schema, value, path, issues, valueIssues) {
         issues.push(path ? `${path}.${key}` : key);
         continue;
       }
+      if (childSchema.kind === "conditionalEnum") {
+        // Needs a sibling field's ACTUAL value (e.g. "resource") to know
+        // which branch(es) apply — only resolvable here, where `value` is
+        // the parent object those siblings live on.
+        validateConditionalEnum(childSchema, childValue, value, path ? `${path}.${key}` : key, valueIssues);
+        continue;
+      }
       findMismatches(childSchema, childValue, path ? `${path}.${key}` : key, issues, valueIssues);
     }
+  }
+}
+
+// Validates a conditionalEnum child against only the branches whose
+// discriminator condition(s) actually match the SIBLING field(s) in
+// `parentValue` — e.g. Slack's "operation" is only checked against
+// channelOperations' values when the sibling "resource" is literally
+// "channel", not against the union of every resource's operations.
+//
+// Deliberately fails open (no flag) in two cases, matching this file's
+// existing bias toward missed findings over false positives:
+//   - a branch's discriminator field is missing, non-string, or itself an
+//     expression on parentValue — can't rule the branch out, so it's left
+//     "possibly active" rather than excluded.
+//   - NO branch ends up confidently active at all (e.g. every branch's
+//     discriminator condition fails) — rather than concluding the key
+//     shouldn't be present at all (a different, fuzzier claim this checker
+//     doesn't make), just skip the value check entirely.
+function validateConditionalEnum(schema, value, parentValue, path, valueIssues) {
+  const isArrayKind = schema.enumKind === "enumArray";
+  const literalValues = isArrayKind
+    ? (Array.isArray(value) ? value.filter((v) => typeof v === "string" && !v.startsWith("=")) : [])
+    : (typeof value === "string" && !value.startsWith("=") ? [value] : []);
+  if (!literalValues.length) return;
+
+  const matching = schema.branches.filter((branch) =>
+    Object.entries(branch.when).every(([field, allowed]) => {
+      const actual = parentValue && typeof parentValue === "object" ? parentValue[field] : undefined;
+      return typeof actual !== "string" || allowed.includes(actual);
+    })
+  );
+  if (!matching.length) return;
+
+  const allowedValues = new Set();
+  for (const branch of matching) for (const v of branch.values) allowedValues.add(v);
+  for (const v of literalValues) {
+    if (!allowedValues.has(v)) valueIssues.push({ path, value: v, validValues: [...allowedValues] });
   }
 }
 

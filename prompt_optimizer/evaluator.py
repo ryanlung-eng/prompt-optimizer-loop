@@ -19,20 +19,22 @@ from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 import httpx
 from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
 
+from . import execution_checker as _execution_checker_module
 from . import rag_retriever as _rag_retriever_module
 from . import validator as _validator_module
 from .config import DatabricksConfig
 from .synthetic_data import SyntheticInput
 from .validator import validate_workflow_json
 
-# Hashes THIS file's own source, validator.py's, check_params.js's, AND
-# rag_retriever.py's — all directly determine how a conversation plays out
-# (self-repair trigger logic, what counts as "valid", and — for the custom-
-# RAG arm — what retrieve_context() actually fetches: top_k,
-# max_context_chars, query_type all live in rag_retriever.py, not just the
-# live index content). Baked into the cache key below so any change here
-# automatically invalidates stale cached conversations, instead of relying on
-# remembering to bump a version number or clear the cache by hand.
+# Hashes THIS file's own source, validator.py's, check_params.js's,
+# rag_retriever.py's, AND execution_checker.py's — all directly determine
+# how a conversation plays out (self-repair trigger logic, what counts as
+# "valid", and — for the custom-RAG arm — what retrieve_context() actually
+# fetches: top_k, max_context_chars, query_type all live in rag_retriever.py,
+# not just the live index content). Baked into the cache key below so any
+# change here automatically invalidates stale cached conversations, instead
+# of relying on remembering to bump a version number or clear the cache by
+# hand.
 # check_params.js is invoked via subprocess rather than imported, so it's
 # easy to forget — exactly what happened here: three straight hallucination-
 # detection bug fixes to it never invalidated the cache at all, because only
@@ -46,6 +48,7 @@ _LOGIC_VERSION = hashlib.sha256(
         + Path(_validator_module.__file__).read_text()
         + _validator_module._SCHEMA_CHECK_SCRIPT.read_text()
         + Path(_rag_retriever_module.__file__).read_text()
+        + Path(_execution_checker_module.__file__).read_text()
     ).encode()
 ).hexdigest()[:16]
 
@@ -352,6 +355,7 @@ class WorkflowEvaluator:
         self, client: httpx.AsyncClient, system_prompt: str, inp: SyntheticInput,
         endpoint_url: Optional[str] = None, use_responses_api: bool = True,
         retrieve_on_repair: Optional[Callable[[str], Awaitable[str]]] = None,
+        execution_checker: Optional[Callable[[str], Awaitable[List[str]]]] = None,
     ) -> Tuple[str, List[dict]]:
         """
         Runs the KA up to _MAX_TURNS times, answering clarifying questions with
@@ -392,6 +396,16 @@ class WorkflowEvaluator:
         return value (a second, error-targeted retrieval) is appended to that
         turn's reply so the model has a real chance to fix the SPECIFIC thing
         that broke, not just retry blind.
+
+        execution_checker (custom-RAG arm only — None elsewhere, so behavior
+        is unchanged by default): called with a structurally-VALID response
+        before it's accepted as final. Distinct from structural validation —
+        this targets the "right node types, wrong execution behavior" class
+        of bug (cross-node references that won't resolve, guards that don't
+        cover every action, missing Merge synchronization) that passes every
+        structural check but wouldn't actually work. Returns a list of issue
+        strings; a non-empty list is fed back as a repair turn exactly like
+        a structural error, consuming one turn of the shared budget.
         """
         endpoint_url = endpoint_url or self._endpoint_url
         conversation = f"User: {inp.text}"
@@ -420,8 +434,28 @@ class WorkflowEvaluator:
             # bucketed as "never attempted" in one place while still
             # generating a structural error in another.
             structural = validate_workflow_json(response)
-            if structural.is_json:
-                if structural.valid or last_turn:
+            if structural.is_json and structural.valid:
+                if last_turn or execution_checker is None:
+                    return response, transcript
+                # Structurally valid, but not yet accepted — give the
+                # narrow execution-trace checker (see execution_checker.py)
+                # a chance to catch the "right node types, wrong runtime
+                # behavior" class of bug before this is returned as final.
+                exec_issues = await execution_checker(response)
+                if not exec_issues:
+                    return response, transcript
+                reply = (
+                    f"That parses and passes structural checks, but tracing "
+                    f"through its actual execution surfaced real problems: "
+                    f"{'; '.join(exec_issues)}. Output ONLY the corrected "
+                    f"workflow JSON — start your reply immediately with '{{' "
+                    f"and end with '}}'. Do not diagnose the problem, explain "
+                    f"your reasoning, or write any prose before or after the "
+                    f"JSON; every token spent explaining is a token not spent "
+                    f"on the workflow itself."
+                )
+            elif structural.is_json:
+                if last_turn:
                     return response, transcript
                 error_text = "; ".join(structural.errors)
                 # "Can you fix it and send the corrected JSON?" left room for
@@ -640,6 +674,7 @@ class WorkflowEvaluator:
         rag_config,  # RAGConfig, from .rag_retriever — see run_batch_custom_rag
         endpoint_url: Optional[str] = None,
         use_responses_api: bool = False,
+        execution_check: bool = False,
     ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
         """
         Identical to run_batch_custom_rag except the initial retrieval is run
@@ -650,9 +685,19 @@ class WorkflowEvaluator:
         already narrow (top_k=3, targeted at one specific validation error),
         so filtering it further has little to gain and one more LLM call to
         lose time/money on.
+
+        execution_check=True wires in execution_checker.py's narrow
+        pre-deployment execution-trace check (see that module's docstring) —
+        a separately-benchmarkable toggle, not a silent change to this arm's
+        existing measured behavior. The cache key includes the flag itself
+        (not just this file's source): otherwise a checked and unchecked run
+        against the SAME input/prompt/endpoint would collide on the same
+        cache entry within one benchmark run and silently never exercise the
+        checked path at all.
         """
         from dataclasses import replace as _dc_replace
 
+        from .execution_checker import check_execution
         from .rag_pipeline_v2 import build_retrieved_block, retrieve_and_filter
         from .rag_retriever import retrieve_context
 
@@ -685,6 +730,16 @@ class WorkflowEvaluator:
                 return ""
             return await asyncio.to_thread(retrieve_context, error_text, _repair_rag_config)
 
+        execution_checker = None
+        if execution_check:
+            async def execution_checker(workflow_json_text: str) -> List[str]:
+                # Same cheap/fast model as the relevance filter — this is a
+                # narrow, single-purpose check, not a reasoning-heavy review.
+                async with httpx.AsyncClient() as check_client:
+                    return await check_execution(
+                        check_client, filter_endpoint_url, filter_headers, workflow_json_text,
+                    )
+
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
             nonlocal cache_hits, total_retrieved, total_kept
             async with httpx.AsyncClient() as filter_client:
@@ -697,6 +752,8 @@ class WorkflowEvaluator:
             system_prompt = _assemble_custom_rag_prompt(base_instructions, retrieved_block)
 
             key = self._cache_key(system_prompt, inp, endpoint_url)
+            if execution_check:
+                key += ":::execcheck"
             cached = self._cache.get(key)
             if cached is not None:
                 cache_hits += 1
@@ -709,6 +766,7 @@ class WorkflowEvaluator:
                             client, system_prompt, inp,
                             endpoint_url=endpoint_url, use_responses_api=use_responses_api,
                             retrieve_on_repair=_retrieve_on_repair,
+                            execution_checker=execution_checker,
                         )
                     except Exception as e:
                         cause = e.last_attempt.exception() if isinstance(e, RetryError) else e

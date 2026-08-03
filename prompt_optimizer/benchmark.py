@@ -216,24 +216,27 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 
 
 # --------------------------------------------------------------------- #
-# Hard-scenario benchmark: production KA endpoint vs. the custom RAG     #
-# pipeline (the IDENTICAL production prompt from config.yaml, plus       #
-# retrieval over knowledge-base-upload/ spliced in) — a harder, more      #
-# realistic comparison than the 3-arm one above, since it uses the       #
-# Layer 4 hand-crafted scenarios (self-loops, unwired sub-nodes,          #
-# multi-hop chains) instead of the easier trigger×output synthetic set.  #
-# Using the same prompt text as production means retrieval quality is    #
-# the ONLY variable between the two arms — everything else (rules,       #
-# credentials list, approval pattern, output-format CRITICALs) is        #
-# identical, so a score difference can't be explained away as "well, the #
-# prompts weren't the same to begin with."                               #
+# Hard-scenario benchmark: custom RAG pipeline variants (the IDENTICAL    #
+# production prompt from config.yaml, plus retrieval over                #
+# knowledge-base-upload/ spliced in) — a harder, more realistic          #
+# comparison than the 3-arm one above, since it uses the Layer 4         #
+# hand-crafted scenarios (self-loops, unwired sub-nodes, multi-hop       #
+# chains) instead of the easier trigger×output synthetic set.           #
+#                                                                        #
+# Production is deliberately NOT one of these arms — across every run   #
+# so far the custom RAG pipeline has consistently and clearly exceeded  #
+# it, so this now isolates differences BETWEEN the custom pipeline      #
+# variants themselves: v1 (top-K retrieval only) vs v2 (+ relevance     #
+# filter + grounding note) vs v2 + the execution-trace checker (a       #
+# narrow, cheap-model second opinion wired into the self-repair loop     #
+# itself — see execution_checker.py — not just a post-hoc measurement). #
 # --------------------------------------------------------------------- #
 
-_HARD_ARMS = ["production", "custom_rag", "custom_rag_v2"]
+_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_checked"]
 _HARD_ARM_LABELS = {
-    "production": "Production (KA endpoint)",
     "custom_rag": "Custom RAG (same prompt + retrieved big-corpus context)",
     "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
+    "custom_rag_v2_checked": "Custom RAG v2 + execution-trace checker",
 }
 
 # Every string in StructuralResult.warnings comes from exactly one of these
@@ -259,13 +262,14 @@ async def run_hard_benchmark(
 
     inputs = load_hard_scenarios()
     base_prompt = config.prompts[config.benchmark.node_name]
-    db = config.databricks
-    ka_endpoint = f"{db.workspace_url}/serving-endpoints/{db.eval_endpoint}/invocations"
 
     # Same prompt text production receives (see run_batch_custom_rag's seam-
-    # splice branch) — NOT instructions.md, so this arm isolates retrieval
-    # quality as the only difference from production rather than also
-    # confounding it with a different rules document.
+    # splice branch) — NOT instructions.md, so every arm isolates retrieval/
+    # pipeline differences rather than also confounding them with a
+    # different rules document. Production itself is no longer benchmarked
+    # here — the custom RAG arms have consistently and clearly exceeded it,
+    # so this now isolates differences BETWEEN the custom pipeline variants
+    # instead (v1 vs v2 vs v2+execution-checker).
     base_instructions = base_prompt
 
     # Override enabled=True regardless of config.yaml's rag.enabled — running
@@ -303,12 +307,6 @@ async def run_hard_benchmark(
         except Exception as e:
             console.print(f"  [yellow]Warning: failed to log traces for arm '{arm}' ({e}).[/yellow]")
 
-    console.print(f"  Running arm: production (KA endpoint) on {len(inputs)} hard scenarios…")
-    results["production"] = await _run_arm(
-        evaluator, judge, base_prompt, inputs, ka_endpoint, use_responses_api=True,
-    )
-    _trace("production", results["production"])
-
     console.print(f"  Running arm: custom_rag on {len(inputs)} hard scenarios…")
     pairs = await evaluator.run_batch_custom_rag(base_instructions, inputs, rag_config)
     results["custom_rag"] = await judge.evaluate_batch(pairs)
@@ -320,6 +318,14 @@ async def run_hard_benchmark(
     results["custom_rag_v2"] = await judge.evaluate_batch(pairs_v2)
     _trace("custom_rag_v2", results["custom_rag_v2"])
 
+    console.print(f"  Running arm: custom_rag_v2_checked (+ execution-trace checker) "
+                  f"on {len(inputs)} hard scenarios…")
+    pairs_v2_checked = await evaluator.run_batch_custom_rag_v2(
+        base_instructions, inputs, rag_config, execution_check=True,
+    )
+    results["custom_rag_v2_checked"] = await judge.evaluate_batch(pairs_v2_checked)
+    _trace("custom_rag_v2_checked", results["custom_rag_v2_checked"])
+
     if tracer is not None:
         console.print(f"  Traces logged to MLflow experiment: {config.benchmark.trace_experiment_name}")
 
@@ -327,7 +333,7 @@ async def run_hard_benchmark(
 
 
 def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names: List[str]) -> None:
-    table = Table(title="[bold]Hard-scenario benchmark: production KA vs. custom RAG pipeline[/bold]")
+    table = Table(title="[bold]Hard-scenario benchmark: custom RAG pipeline variants[/bold]")
     table.add_column("Metric", style="cyan")
     for arm in _HARD_ARMS:
         table.add_column(_HARD_ARM_LABELS[arm], justify="right")
@@ -459,15 +465,16 @@ def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names:
 
 
 def print_qualitative_examples_hard(
-    results: Dict[str, List[EvalResult]], arm_a: str = "production", arm_b: str = "custom_rag", n: int = 5,
+    results: Dict[str, List[EvalResult]], arm_a: str = "custom_rag", arm_b: str = "custom_rag_v2", n: int = 5,
 ) -> None:
     """
-    With only 18 scenarios, every disagreement is worth seeing directly —
+    With only 17 scenarios, every disagreement is worth seeing directly —
     unlike print_qualitative_examples (which only checks one direction to
     build a monotonic "value of this project" story), this checks both
-    directions between any two arms. Defaults to production vs custom_rag;
-    pass arm_a/arm_b to compare any other pair (e.g. custom_rag vs
-    custom_rag_v2, to see concretely what the relevance filter changed).
+    directions between any two arms. Defaults to custom_rag vs custom_rag_v2;
+    pass arm_a/arm_b to compare any other pair (e.g. custom_rag_v2 vs
+    custom_rag_v2_checked, to see concretely what the execution-trace
+    checker changed).
     """
     a_results = {r.input.text: r for r in results[arm_a]}
     b_results = {r.input.text: r for r in results[arm_b]}
@@ -514,7 +521,8 @@ async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
 
     results = await run_hard_benchmark(config, evaluator, judge)
     print_hard_benchmark_report(results, dim_names)
-    print_qualitative_examples_hard(results, "production", "custom_rag")
     console.rule("[bold]custom_rag vs custom_rag_v2 (relevance filter + grounding)[/bold]")
     print_qualitative_examples_hard(results, "custom_rag", "custom_rag_v2")
+    console.rule("[bold]custom_rag_v2 vs custom_rag_v2_checked (execution-trace checker)[/bold]")
+    print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_checked")
     return results

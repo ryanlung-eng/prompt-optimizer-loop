@@ -83,7 +83,12 @@ try {
 // the "n8n-nodes-base." prefix are checkable — custom/community prefixes
 // (CUSTOM.*, @n8n/n8n-nodes-langchain.*) live outside this package, so
 // they're skipped, never flagged.
+// nodes.json doubles as the schema source for checks 1-2 (see
+// nodeDescriptionsByName below) — one load covers both, instead of a second,
+// hand-maintained map of per-node module paths.
 let knownBaseNodes = null; // Map short-name -> [versions]
+let nodeDescriptionsByName = null; // Map short-name -> [{version, properties, polling}, ...]
+let manifestLoadError = null; // surfaced as setupError in main() if it looks like a missing-install
 try {
   const list = require("n8n-nodes-base/dist/types/nodes.json");
   // Versioned nodes appear as MULTIPLE entries sharing one name (SlackV1 and
@@ -91,45 +96,40 @@ try {
   // own major's version list) — union them, or half a node's real versions
   // would be reported as invented.
   knownBaseNodes = new Map();
+  nodeDescriptionsByName = new Map();
   for (const n of list) {
     const versions = knownBaseNodes.get(n.name) || [];
     knownBaseNodes.set(n.name, versions.concat(n.version ?? 1));
+    const entries = nodeDescriptionsByName.get(n.name) || [];
+    entries.push(n);
+    nodeDescriptionsByName.set(n.name, entries);
   }
 } catch (e) {
-  // Older package layout without dist/types/nodes.json — skip these two
-  // checks rather than crash the rest.
+  // Older package layout without dist/types/nodes.json, or the package isn't
+  // installed at all — skip checks 1-2 rather than crash the rest; main()
+  // surfaces the latter case as a diagnosable setupError.
+  manifestLoadError = e;
 }
 let installedBaseVersion = "unknown";
 try {
   installedBaseVersion = require("n8n-nodes-base/package.json").version;
 } catch (e) { /* same degradation */ }
 
-const NODE_TYPE_MAP = {
-  "n8n-nodes-base.scheduleTrigger": ["n8n-nodes-base/dist/nodes/Schedule/ScheduleTrigger.node.js", "ScheduleTrigger"],
-  "n8n-nodes-base.cron": ["n8n-nodes-base/dist/nodes/Cron/Cron.node.js", "Cron"],
-  "n8n-nodes-base.gmailTrigger": ["n8n-nodes-base/dist/nodes/Google/Gmail/GmailTrigger.node.js", "GmailTrigger"],
-  "n8n-nodes-base.gmail": ["n8n-nodes-base/dist/nodes/Google/Gmail/Gmail.node.js", "Gmail"],
-  "n8n-nodes-base.slackTrigger": ["n8n-nodes-base/dist/nodes/Slack/SlackTrigger.node.js", "SlackTrigger"],
-  "n8n-nodes-base.slack": ["n8n-nodes-base/dist/nodes/Slack/Slack.node.js", "Slack"],
-  "n8n-nodes-base.jiraTrigger": ["n8n-nodes-base/dist/nodes/Jira/JiraTrigger.node.js", "JiraTrigger"],
-  "n8n-nodes-base.jira": ["n8n-nodes-base/dist/nodes/Jira/Jira.node.js", "Jira"],
-  "n8n-nodes-base.googleSheetsTrigger": ["n8n-nodes-base/dist/nodes/Google/Sheet/GoogleSheetsTrigger.node.js", "GoogleSheetsTrigger"],
-  "n8n-nodes-base.googleSheets": ["n8n-nodes-base/dist/nodes/Google/Sheet/GoogleSheets.node.js", "GoogleSheets"],
-  "n8n-nodes-base.trelloTrigger": ["n8n-nodes-base/dist/nodes/Trello/TrelloTrigger.node.js", "TrelloTrigger"],
-  "n8n-nodes-base.trello": ["n8n-nodes-base/dist/nodes/Trello/Trello.node.js", "Trello"],
-  "n8n-nodes-base.googleDocs": ["n8n-nodes-base/dist/nodes/Google/Docs/GoogleDocs.node.js", "GoogleDocs"],
-  "n8n-nodes-base.googleDriveTrigger": ["n8n-nodes-base/dist/nodes/Google/Drive/GoogleDriveTrigger.node.js", "GoogleDriveTrigger"],
-  "n8n-nodes-base.googleDrive": ["n8n-nodes-base/dist/nodes/Google/Drive/GoogleDrive.node.js", "GoogleDrive"],
-  "n8n-nodes-base.googleSlides": ["n8n-nodes-base/dist/nodes/Google/Slides/GoogleSlides.node.js", "GoogleSlides"],
-  "n8n-nodes-base.googleCalendar": ["n8n-nodes-base/dist/nodes/Google/Calendar/GoogleCalendar.node.js", "GoogleCalendar"],
-  "n8n-nodes-base.googleCalendarTrigger": ["n8n-nodes-base/dist/nodes/Google/Calendar/GoogleCalendarTrigger.node.js", "GoogleCalendarTrigger"],
-  "n8n-nodes-base.httpRequest": ["n8n-nodes-base/dist/nodes/HttpRequest/HttpRequest.node.js", "HttpRequest"],
-  "n8n-nodes-base.executeWorkflow": ["n8n-nodes-base/dist/nodes/ExecuteWorkflow/ExecuteWorkflow/ExecuteWorkflow.node.js", "ExecuteWorkflow"],
-  "n8n-nodes-base.if": ["n8n-nodes-base/dist/nodes/If/If.node.js", "If"],
-  "n8n-nodes-base.noOp": ["n8n-nodes-base/dist/nodes/NoOp/NoOp.node.js", "NoOp"],
-  "n8n-nodes-base.code": ["n8n-nodes-base/dist/nodes/Code/Code.node.js", "Code"],
-  "n8n-nodes-base.set": ["n8n-nodes-base/dist/nodes/Set/Set.node.js", "Set"],
-};
+// Finds the nodes.json entry (see above) whose declared version(s) include
+// `typeVersion` — properties are already fully resolved/flattened per major
+// version in this manifest, no class instantiation needed. Falls back to the
+// last (highest) entry for an unrecognized typeVersion so checks 1-2 still
+// run against SOME real schema; checkNodeTypeExists separately flags a
+// genuinely invented version as its own finding.
+function findNodeDescription(shortName, typeVersion) {
+  const entries = nodeDescriptionsByName.get(shortName);
+  if (!entries || !entries.length) return null;
+  const match = entries.find((e) => {
+    const v = e.version;
+    return Array.isArray(v) ? v.some((x) => Number(x) === Number(typeVersion)) : Number(v) === Number(typeVersion);
+  });
+  return match || entries[entries.length - 1];
+}
 
 // ---------------------------------------------------------------------------
 // Schema descriptors.
@@ -708,36 +708,13 @@ function collectNodeNameReferences(value, key, refs) {
   }
 }
 
-const instanceCache = new Map();
-
-function loadInstance(type) {
-  if (instanceCache.has(type)) return instanceCache.get(type);
-  const entry = NODE_TYPE_MAP[type];
-  if (!entry) {
-    instanceCache.set(type, null);
-    return null;
-  }
-  const [modulePath, exportName] = entry;
-  const mod = require(modulePath);
-  const inst = new mod[exportName]();
-  instanceCache.set(type, inst);
-  return inst;
-}
-
-function getDescriptionForVersion(inst, version) {
-  if (inst.nodeVersions) {
-    const versioned = inst.nodeVersions[version] || inst.nodeVersions[inst.currentVersion];
-    return versioned.description;
-  }
-  return inst.description;
-}
-
 function checkNode(node, allNodeNames) {
   const finding = { node: node.name, type: node.type, unknownParams: [], invalidValues: [], danglingNodeReferences: [] };
 
-  const inst = loadInstance(node.type);
-  if (inst) {
-    const desc = getDescriptionForVersion(inst, node.typeVersion);
+  const shortName = typeof node.type === "string" && node.type.startsWith("n8n-nodes-base.")
+    ? node.type.slice("n8n-nodes-base.".length) : null;
+  const desc = shortName && nodeDescriptionsByName ? findNodeDescription(shortName, node.typeVersion) : null;
+  if (desc) {
     const topLevelChildren = buildChildMap(desc.properties);
     if (desc.polling) {
       for (const [k, v] of Object.entries(buildChildMap(commonPollingParameters))) {
@@ -772,6 +749,16 @@ function checkNode(node, allNodeNames) {
 function isMissingOwnDependency(e) {
   return e && e.code === "MODULE_NOT_FOUND" &&
     /n8n-workflow|n8n-nodes-base|n8n-core/.test(String(e.message || ""));
+}
+
+function missingDependencySetupError(e) {
+  return "npm packages not installed — copy check_params.js and package.json to "
+    + "local scratch space (e.g. /tmp/n8n_schema_check_cache/) and run "
+    + "'npm install --ignore-scripts' there. Don't install into this file's own "
+    + "directory if it's inside a git-synced Workspace folder — node_modules' symlinks "
+    + "(e.g. node_modules/.bin/*) can break Databricks Repos' git-status UI, and a "
+    + "network-backed /Workspace filesystem makes every cold require() much slower "
+    + "than local disk. (" + String((e && e.message) || e) + ")";
 }
 
 // Flags (a) node types claiming the "n8n-nodes-base." prefix that don't
@@ -809,6 +796,10 @@ function main() {
     const unknownNodeTypes = [];
     const unknownTypeVersions = [];
     const warnings = [];
+    if (manifestLoadError && isMissingOwnDependency(manifestLoadError)) {
+      process.stdout.write(JSON.stringify({ issues: [], warnings: [], setupError: missingDependencySetupError(manifestLoadError) }));
+      return;
+    }
     try {
       const workflow = JSON.parse(raw);
       const allNodeNames = new Set((workflow.nodes || []).map((n) => n && n.name).filter(Boolean));
@@ -823,23 +814,11 @@ function main() {
           const finding = checkNode(node, allNodeNames);
           if (finding) issues.push(finding);
         } catch (e) {
-          if (isMissingOwnDependency(e)) {
-            process.stdout.write(JSON.stringify({
-              issues: [],
-              warnings: [],
-              setupError: "npm packages not installed — copy check_params.js and package.json to "
-                + "local scratch space (e.g. /tmp/n8n_schema_check_cache/) and run "
-                + "'npm install --ignore-scripts' there. Don't install into this file's own "
-                + "directory if it's inside a git-synced Workspace folder — node_modules' symlinks "
-                + "(e.g. node_modules/.bin/*) can break Databricks Repos' git-status UI, and a "
-                + "network-backed /Workspace filesystem makes every cold require() much slower "
-                + "than local disk. (" + String((e && e.message) || e) + ")",
-            }));
-            return;
-          }
-          // A node's schema failing to load/resolve for some OTHER reason
-          // (not our own missing deps) is a real, node-specific problem —
-          // surface it instead of swallowing it, but keep checking the rest.
+          // Schema lookup is now a plain Map read (no per-node require()), so
+          // this is a real, node-specific problem, not a missing-dependency
+          // case (that's already handled above, before this loop even
+          // starts) — surface it instead of swallowing it, but keep checking
+          // the rest of the nodes.
           warnings.push(`${node.name} (${node.type}): ${String((e && e.message) || e)}`);
         }
       }

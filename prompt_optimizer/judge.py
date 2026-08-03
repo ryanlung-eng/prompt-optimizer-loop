@@ -427,6 +427,17 @@ these override them. Flagging any of the following as a bug is a false positive:
     SplitInBatchesV3.node.ts `outputNames: ['done', 'loop']`). Wiring the
     per-batch processing branch to index 1 and the after-the-loop branch to
     index 0 is CORRECT.
+  • The Jira node has NO "transition" operation — this does not exist on any
+    version, confirmed directly against the installed node's declared
+    operations. `resource: issue, operation: transitions` (plural) is
+    LOOKUP-ONLY — it returns the list of available transitions, it does not
+    perform one. The correct, and ONLY, way to actually change an issue's
+    status is `resource: issue, operation: update` with
+    `updateFields.statusId` set to a resourceLocator whose value is the
+    transition ID (obtained from the `transitions` lookup). Do NOT flag a
+    workflow using `update` + `updateFields.statusId` to perform a status
+    change as broken or claim it "needs a dedicated transition operation" —
+    that operation is the hallucination, not the fix.
 
 If you are not certain a claim about node behavior is true, leave it out. A
 confident-sounding wrong finding is worse than a missed one — these reviews are

@@ -699,6 +699,89 @@ def _check_trigger_self_loop_risk(nodes: List[dict], connections: dict) -> List[
     ]
 
 
+# A value that LOOKS like an unfilled placeholder (all-caps snake_case,
+# YOUR_-prefixed, or ending _HERE/_PLACEHOLDER) — the same convention used
+# throughout this codebase's own KB examples (YOUR_SPREADSHEET_ID, etc.).
+_PLACEHOLDER_VALUE_RE = re.compile(r"^(YOUR_[A-Z0-9_]+|[A-Z0-9_]+_HERE|[A-Z0-9_]+_PLACEHOLDER)$")
+# A variable/field name that suggests it holds a bot/service-account's OWN
+# identity for a self-loop/anti-recursion guard, e.g. BOT_ACCOUNT_ID,
+# botUserId, selfAccountId — not just any "...Id" field.
+_IDENTITY_GUARD_NAME_RE = re.compile(r"(bot|self|own)[a-z0-9_]*(id|account)", re.IGNORECASE)
+
+
+def _check_placeholder_identity_guard(nodes: List[dict]) -> List[str]:
+    """Heuristic, advisory: an anti-loop/self-message guard that compares a
+    platform identity field (bot/service-account ID) against an UNFILLED
+    placeholder string is architecturally correct — the pattern itself
+    (compare identity, not content) is right — but functionally a permanent
+    no-op: the placeholder can never equal any real ID, so the guard can
+    never match and the workflow re-triggers on its own output indefinitely.
+    This is DIFFERENT from an ordinary placeholder like "YOUR_SPREADSHEET_ID"
+    (which just needs configuring before first use, and is explicitly
+    acceptable per this platform's knowledge_honesty rule) — here the
+    missing value silently disables a safety mechanism rather than merely
+    needing setup, a distinction worth its own check. Confirmed, repeated
+    real-world shape: `const BOT_JIRA_ACCOUNT_ID = 'YOUR_BOT_JIRA_ACCOUNT_ID';`
+    then `... === BOT_JIRA_ACCOUNT_ID` later in the same Code node. Text/
+    regex-based heuristic (mirrors _check_trigger_self_loop_risk's approach)
+    rather than a hard error, since intent can't be proven with full
+    certainty from static JSON alone."""
+    warnings = []
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        name, ntype = n.get("name", "?"), n.get("type", "")
+        params = n.get("parameters") or {}
+
+        if ntype == "n8n-nodes-base.code":
+            code = params.get("jsCode") or params.get("pythonCode") or ""
+            for var_match in re.finditer(
+                r"(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*['\"]([A-Z][A-Z0-9_]*)['\"]",
+                code,
+            ):
+                var_name, value = var_match.group(1), var_match.group(2)
+                if not (_IDENTITY_GUARD_NAME_RE.search(var_name) and _PLACEHOLDER_VALUE_RE.match(value)):
+                    continue
+                used_in_comparison = re.search(
+                    rf"(?:{re.escape(var_name)}\s*(?:===|!==))|(?:(?:===|!==)\s*{re.escape(var_name)}\b)",
+                    code,
+                )
+                if used_in_comparison:
+                    warnings.append(
+                        f"Node '{name}' ({ntype}): '{var_name}' is compared against another "
+                        f"value as what looks like a self-loop/anti-recursion identity guard, "
+                        f"but its own value is the unfilled placeholder '{value}' — since this "
+                        f"can never equal any real ID, the guard can never match, silently "
+                        f"disabling the loop protection rather than merely needing "
+                        f"configuration. Ask the user for the real bot/service-account ID "
+                        f"rather than embedding a placeholder here."
+                    )
+
+        elif ntype in ("n8n-nodes-base.if", "n8n-nodes-base.filter"):
+            cond_block = params.get("conditions")
+            conditions = cond_block.get("conditions") if isinstance(cond_block, dict) else None
+            for cond in conditions or []:
+                if not isinstance(cond, dict):
+                    continue
+                left, right = str(cond.get("leftValue", "")), cond.get("rightValue", "")
+                op = (cond.get("operator") or {}).get("operation") or ""
+                if (
+                    op in ("equals", "notEquals")
+                    and isinstance(right, str)
+                    and _PLACEHOLDER_VALUE_RE.match(right)
+                    and _IDENTITY_GUARD_NAME_RE.search(left)
+                ):
+                    warnings.append(
+                        f"Node '{name}' ({ntype}): compares '{left}' against the unfilled "
+                        f"placeholder '{right}' as what looks like a self-loop/anti-recursion "
+                        f"identity guard — since this can never equal any real ID, the guard "
+                        f"can never match, silently disabling the loop protection rather than "
+                        f"merely needing configuration. Ask the user for the real bot/"
+                        f"service-account ID rather than embedding a placeholder here."
+                    )
+    return warnings
+
+
 @dataclass
 class StructuralResult:
     is_json: bool = False
@@ -1018,5 +1101,6 @@ def validate_workflow_json(text: str) -> StructuralResult:
 
     # Advisory only — heuristic, never affects checks/.valid.
     result.warnings.extend(_check_trigger_self_loop_risk(nodes, connections))
+    result.warnings.extend(_check_placeholder_identity_guard(nodes))
 
     return result

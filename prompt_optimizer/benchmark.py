@@ -236,7 +236,7 @@ _HARD_ARM_LABELS = {
     "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
 }
 
-# Every string in StructuralResult.warnings comes from exactly one of three
+# Every string in StructuralResult.warnings comes from exactly one of these
 # validator.py checks (confirmed by reading validator.py directly, not
 # guessed from message content) — matched here on the fixed substring each
 # one always emits, so a category count is exact, not a fuzzy keyword guess.
@@ -244,6 +244,7 @@ _LAYER2_WARNING_CATEGORIES = [
     ("typeVersion possibly stale", lambda w: "is not a real version of that node" in w),
     ("approval gate missing", lambda w: "no approval gate upstream" in w),
     ("possible self-loop risk", lambda w: w.startswith("Possible infinite-loop risk")),
+    ("placeholder identity guard", lambda w: "silently disabling the loop protection" in w),
 ]
 
 

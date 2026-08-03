@@ -468,6 +468,41 @@ def _check_empty_resource_locators(nodes: List[dict]) -> List[str]:
     return errors
 
 
+def _check_toolworkflow_self_reference(nodes: List[dict]) -> List[str]:
+    """
+    A toolWorkflow node (an agent tool that calls another n8n workflow) whose
+    workflowId resolves to THIS SAME workflow's own ID is a confirmed,
+    repeated failure — calling the tool re-enters the current workflow from
+    its own Execute Workflow Trigger instead of running a separate
+    sub-workflow, recursing indefinitely.
+
+    Source-confirmed shape: workflowId is a resourceLocator
+    ({"__rl": true, "mode": "list"|"id", "value": ...}) only present when
+    source="database" (the default) — value is checked for the literal
+    "$workflow.id" expression, the only way a static value could actually BE
+    "this workflow", since a real workflow ID is a fixed string that can't
+    coincidentally equal the self-reference expression.
+    """
+    errors = []
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("type") != "@n8n/n8n-nodes-langchain.toolWorkflow":
+            continue
+        params = n.get("parameters") or {}
+        if params.get("source", "database") != "database":
+            continue
+        workflow_id = params.get("workflowId")
+        value = workflow_id.get("value") if isinstance(workflow_id, dict) else workflow_id
+        if isinstance(value, str) and "$workflow.id" in value:
+            errors.append(
+                f"Node '{n.get('name')}' (toolWorkflow) has workflowId pointing at "
+                f"'$workflow.id' — this workflow's OWN id. Calling this tool re-enters "
+                f"the current workflow instead of running a separate sub-workflow, "
+                f"recursing indefinitely. Reference a distinct sub-workflow's fixed ID "
+                f"instead."
+            )
+    return errors
+
+
 # Outbound sends that require the mandatory approval gate, by node type ->
 # the parameter values that make it an actual outbound send (vs. a read).
 _SLACK_SEND_OPS = {"post", "postEphemeral", "sendAndWait", "update"}
@@ -954,6 +989,10 @@ def validate_workflow_json(text: str) -> StructuralResult:
     rl_errors = _check_empty_resource_locators(nodes)
     checks["no_empty_resource_locator_values"] = len(rl_errors) == 0
     result.errors.extend(rl_errors)
+
+    self_ref_errors = _check_toolworkflow_self_reference(nodes)
+    checks["no_toolworkflow_self_reference"] = len(self_ref_errors) == 0
+    result.errors.extend(self_ref_errors)
 
     # Warning, not error: platform policy rather than n8n schema — the JSON
     # still imports and runs, it just skips a gate it shouldn't.

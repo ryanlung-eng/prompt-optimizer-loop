@@ -115,12 +115,23 @@ try {
   installedBaseVersion = require("n8n-nodes-base/package.json").version;
 } catch (e) { /* same degradation */ }
 
+function _maxVersion(v) {
+  return Array.isArray(v) ? Math.max(...v.map(Number)) : Number(v);
+}
+
 // Finds the nodes.json entry (see above) whose declared version(s) include
 // `typeVersion` — properties are already fully resolved/flattened per major
-// version in this manifest, no class instantiation needed. Falls back to the
-// last (highest) entry for an unrecognized typeVersion so checks 1-2 still
-// run against SOME real schema; checkNodeTypeExists separately flags a
-// genuinely invented version as its own finding.
+// version in this manifest, no class instantiation needed. On no exact match
+// (an unrecognized typeVersion — the same harmless staleness case Layer 2
+// already flags as advisory, e.g. Slack 2.5 when the installed package only
+// knows [2, 2.1, 2.2, 2.3, 2.4]), falls back to whichever entry has the
+// HIGHEST known version, NOT "last in nodes.json's array" — that ordering is
+// arbitrary and, for Slack specifically, put the OLD v1 entry after the
+// current v2.x entry, so an unrecognized 2.5 silently fell back to v1's
+// schema (missing "select") instead of the much closer v2.x one, producing a
+// false "unknown parameter" finding on a real, current field. Mirrors what
+// the old class-instantiation approach got from the node's own
+// `currentVersion` concept, without needing to instantiate anything.
 function findNodeDescription(shortName, typeVersion) {
   const entries = nodeDescriptionsByName.get(shortName);
   if (!entries || !entries.length) return null;
@@ -128,7 +139,8 @@ function findNodeDescription(shortName, typeVersion) {
     const v = e.version;
     return Array.isArray(v) ? v.some((x) => Number(x) === Number(typeVersion)) : Number(v) === Number(typeVersion);
   });
-  return match || entries[entries.length - 1];
+  if (match) return match;
+  return entries.reduce((best, e) => (_maxVersion(e.version) > _maxVersion(best.version) ? e : best));
 }
 
 // ---------------------------------------------------------------------------

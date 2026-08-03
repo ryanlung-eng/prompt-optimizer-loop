@@ -236,6 +236,16 @@ _HARD_ARM_LABELS = {
     "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
 }
 
+# Every string in StructuralResult.warnings comes from exactly one of three
+# validator.py checks (confirmed by reading validator.py directly, not
+# guessed from message content) — matched here on the fixed substring each
+# one always emits, so a category count is exact, not a fuzzy keyword guess.
+_LAYER2_WARNING_CATEGORIES = [
+    ("typeVersion possibly stale", lambda w: "is not a real version of that node" in w),
+    ("approval gate missing", lambda w: "no approval gate upstream" in w),
+    ("possible self-loop risk", lambda w: w.startswith("Possible infinite-loop risk")),
+]
+
 
 async def run_hard_benchmark(
     config: Config,
@@ -324,6 +334,33 @@ def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names:
     for arm in _HARD_ARMS:
         warn_row.append(str(sum(len(x.structural.warnings) for x in results[arm])))
     table.add_row(*warn_row)
+
+    # Broken down by category, since the total alone reads as a quality
+    # signal but isn't one: these three checks fire on SURFACE AREA (a
+    # workflow with more outbound-send nodes or more trigger+send pairs has
+    # more opportunities to trip "no approval gate"/"self-loop risk" purely
+    # by having more of the thing being checked), not on defect severity.
+    # An arm scoring worse on blockers can still show fewer warnings simply
+    # by omitting the gated behavior entirely rather than getting it right.
+    for label, matcher in _LAYER2_WARNING_CATEGORIES:
+        row = [f"  - {label}"]
+        for arm in _HARD_ARMS:
+            row.append(str(sum(
+                1 for x in results[arm] for w in x.structural.warnings if matcher(w)
+            )))
+        table.add_row(*row)
+
+    # Catches drift if validator.py grows a 4th warnings-producing check
+    # without this list being updated — should read 0 for every arm; a
+    # nonzero value here means some warning text no longer matches any
+    # known category and the breakdown above is silently incomplete.
+    other_row = ["  - other/uncategorized"]
+    for arm in _HARD_ARMS:
+        other_row.append(str(sum(
+            1 for x in results[arm] for w in x.structural.warnings
+            if not any(matcher(w) for _label, matcher in _LAYER2_WARNING_CATEGORIES)
+        )))
+    table.add_row(*other_row)
 
     # Label reads "N/M reviewed" rather than embedding a bare fraction, since
     # "0 soundness issues" in a column header previously read as if 0 were a

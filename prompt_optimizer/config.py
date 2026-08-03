@@ -76,6 +76,14 @@ class BenchmarkConfig:
     # Directory of flattened .md knowledge-base files to inject verbatim into
     # the "knowledge injected" arm's prompt.
     kb_path: str = "knowledge-base-upload"
+    # Separate MLflow experiment for run_hard_benchmark's per-scenario traces
+    # (structural errors/warnings, soundness issues/blockers, the full
+    # conversation transcript) — deliberately NOT the same experiment as
+    # DatabricksConfig.experiment_name, since that one holds prompt-iteration
+    # runs from the main optimize loop and mixing the two shapes of data
+    # together would make both harder to browse. None disables tracing
+    # entirely (run_hard_benchmark then behaves exactly as before).
+    trace_experiment_name: Optional[str] = None
 
 
 @dataclass
@@ -153,6 +161,7 @@ def load_config(path: str = "config.yaml") -> Config:
     benchmark = BenchmarkConfig(
         node_name=bm.get("node_name", "Workflow Builder"),
         kb_path=bm.get("kb_path", "knowledge-base-upload"),
+        trace_experiment_name=bm.get("trace_experiment_name"),
     )
 
     rag_raw = raw.get("rag", {})

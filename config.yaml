@@ -188,6 +188,10 @@ benchmark:
   node_name: "Workflow Builder"          # which prompts[...] entry to benchmark
   kb_path: "knowledge-base-upload"       # flattened .md files injected into the
                                           # "knowledge_injected" arm's prompt
+  trace_experiment_name: "/Users/ryan.lung@ibotta.com/n8n-hard-benchmark-traces"
+                                          # separate MLflow experiment for run_hard_benchmark's
+                                          # per-scenario traces (rename freely) — set to null/omit
+                                          # to disable tracing entirely
 
 judge:
   # Weights must sum to 1.0. Equal by default — there's no calibration data

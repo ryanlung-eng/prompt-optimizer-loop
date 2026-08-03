@@ -279,19 +279,48 @@ async def run_hard_benchmark(
 
     results: Dict[str, List[EvalResult]] = {}
 
+    # Optional — logs one MLflow trace per (scenario, arm) with the full
+    # transcript, structural errors/warnings, and soundness issues/blockers,
+    # so a failure can be drilled into in MLflow instead of only existing as
+    # console output. Tracing is best-effort: a failure here (auth hiccup,
+    # mlflow API mismatch) must never take down the benchmark run itself,
+    # since the report printed at the end is the thing this script exists for.
+    tracer = None
+    if config.benchmark.trace_experiment_name:
+        try:
+            from .tracker import HardBenchmarkTracer
+            tracer = HardBenchmarkTracer(config.databricks, config.benchmark.trace_experiment_name)
+        except Exception as e:
+            console.print(f"  [yellow]Warning: could not initialize hard-benchmark tracing "
+                          f"({e}) — continuing without it.[/yellow]")
+
+    def _trace(arm: str, arm_results: List[EvalResult]) -> None:
+        if tracer is None:
+            return
+        try:
+            tracer.log_arm(arm, arm_results)
+        except Exception as e:
+            console.print(f"  [yellow]Warning: failed to log traces for arm '{arm}' ({e}).[/yellow]")
+
     console.print(f"  Running arm: production (KA endpoint) on {len(inputs)} hard scenarios…")
     results["production"] = await _run_arm(
         evaluator, judge, base_prompt, inputs, ka_endpoint, use_responses_api=True,
     )
+    _trace("production", results["production"])
 
     console.print(f"  Running arm: custom_rag on {len(inputs)} hard scenarios…")
     pairs = await evaluator.run_batch_custom_rag(base_instructions, inputs, rag_config)
     results["custom_rag"] = await judge.evaluate_batch(pairs)
+    _trace("custom_rag", results["custom_rag"])
 
     console.print(f"  Running arm: custom_rag_v2 (relevance filter + grounding) "
                   f"on {len(inputs)} hard scenarios…")
     pairs_v2 = await evaluator.run_batch_custom_rag_v2(base_instructions, inputs, rag_config)
     results["custom_rag_v2"] = await judge.evaluate_batch(pairs_v2)
+    _trace("custom_rag_v2", results["custom_rag_v2"])
+
+    if tracer is not None:
+        console.print(f"  Traces logged to MLflow experiment: {config.benchmark.trace_experiment_name}")
 
     return results
 

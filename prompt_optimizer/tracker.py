@@ -275,3 +275,93 @@ class PromptTracker:
         ]
         available = [c for c in cols if c in runs.columns]
         return runs[available].to_dict("records")
+
+
+class HardBenchmarkTracer:
+    """Logs one MLflow trace per (scenario, arm) pair from run_hard_benchmark,
+    so every hard-scenario result's full detail — the conversation transcript,
+    structural errors/warnings, Layer 3 soundness issues/blockers, and scores —
+    lands in MLflow's Traces UI instead of existing only as console output that
+    has to be pasted elsewhere to review. Deliberately a SEPARATE experiment
+    from PromptTracker's (see BenchmarkConfig.trace_experiment_name) — these
+    are shaped completely differently (one trace per scenario+arm, not one run
+    per prompt iteration) and mixing them would make both harder to browse.
+
+    Uses mlflow.start_span (stable since the tracing API's introduction) for
+    everything that matters; mlflow.update_current_trace (added later, for
+    trace-level searchable tags) is best-effort — every value it would have
+    set is ALSO on the root span's own attributes, so an older installed
+    mlflow still gets full trace content, just without the extra tag index.
+    """
+
+    def __init__(self, config: DatabricksConfig, experiment_name: str):
+        os.environ["DATABRICKS_HOST"] = config.workspace_url
+        os.environ["DATABRICKS_TOKEN"] = config.token
+        mlflow.set_tracking_uri("databricks")
+        mlflow.set_experiment(experiment_name)
+
+    def log_arm(self, arm: str, results: List[EvalResult]) -> None:
+        for r in results:
+            self._log_scenario(arm, r)
+
+    def _log_scenario(self, arm: str, r: EvalResult) -> None:
+        scenario = r.input.category
+        with mlflow.start_span(name=f"{scenario}::{arm}") as root:
+            root.set_inputs({
+                "scenario": scenario,
+                "prompt_text": r.input.text,
+                "expected_behavior": r.input.expected_behavior,
+            })
+
+            # transcript always starts with a "user" entry and strictly
+            # alternates user/ka (see WorkflowEvaluator._run_conversation) —
+            # pair each user entry with the ka reply that follows it into one
+            # child span per actual generation call, rather than one span
+            # per raw message.
+            transcript = r.transcript or []
+            turn = 0
+            i = 0
+            while i < len(transcript):
+                if transcript[i].get("role") != "user":
+                    i += 1
+                    continue
+                user_entry = transcript[i]
+                ka_entry = (
+                    transcript[i + 1]
+                    if i + 1 < len(transcript) and transcript[i + 1].get("role") == "ka"
+                    else None
+                )
+                with mlflow.start_span(name=f"turn_{turn}") as t:
+                    t.set_inputs({"prompt": user_entry.get("content", "")})
+                    if ka_entry is not None:
+                        t.set_outputs({"response": ka_entry.get("content", "")})
+                turn += 1
+                i += 2 if ka_entry is not None else 1
+
+            root.set_outputs({
+                "final_response": r.actual_response or "",
+                "structural_valid": r.structural.valid,
+                "structural_errors": r.structural.errors,
+                "structural_warnings": r.structural.warnings,
+                "soundness_issues": r.soundness_issues,
+                "soundness_blockers": r.soundness_blockers,
+                "soundness_would_approve": r.soundness_would_approve,
+            })
+            root.set_attributes({
+                "arm": arm,
+                "scenario": scenario,
+                "weighted_score": r.weighted_score,
+                "structural_valid": r.structural.valid,
+                "blocker_count": len(r.soundness_blockers),
+                "warning_count": len(r.structural.warnings),
+                **{f"score_{k}": v for k, v in r.scores.items()},
+            })
+            try:
+                mlflow.update_current_trace(tags={
+                    "scenario": scenario,
+                    "arm": arm,
+                    "structural_valid": str(r.structural.valid),
+                    "has_blockers": str(bool(r.soundness_blockers)),
+                })
+            except AttributeError:
+                pass  # older mlflow — root span attributes above already carry this

@@ -179,10 +179,15 @@ assistant. Do NOT count referencing any of these as fabrication:
   • The "three gates" pre-build framework (safety check, possibility check,
     clarity check) — a standard design pattern applied before generating any
     workflow, not something the user needs to have requested per-message
-  • The approval gate is MANDATORY, not optional, on every outbound send of a
-    Slack message or email (DM or channel post, any recipient). It is NEVER
-    required for a Google Sheets update alone — updating a sheet is not
-    sending a message to a person. The approval DM goes to the WORKFLOW
+  • The approval gate is the DEFAULT on every outbound send of a Slack
+    message or email (DM or channel post, any recipient) — applied without
+    the user asking for it. ONE exception: if the user EXPLICITLY asked for
+    automatic/no-approval sending for specific sends, honoring that is
+    correct — the user has acknowledged the tradeoff — and wrapping those
+    explicitly-declined sends in a gate anyway is an intent violation, not
+    extra safety. Absent an explicit opt-out, a send without the gate is
+    the bug. The gate is NEVER required for a Google Sheets update alone —
+    updating a sheet is not sending a message to a person. The approval DM goes to the WORKFLOW
     OWNER — the person who built/owns the workflow — NOT the person who
     triggered the automation or whoever the outbound message is about. If the
     trigger event and the workflow owner are different people (e.g. a Slack
@@ -397,12 +402,17 @@ Specifically hunt for:
     fields referenced downstream; an aggregation step that doesn't actually
     aggregate the fields needed later.
 
-DOMAIN RULE YOU MUST NOT FLAG AS A BUG — the approval gate is MANDATORY on this
-platform for every outbound send of a Slack message or email (DM or channel
-post, any recipient). It is NOT something the user has to request, and its
-presence is NEVER an "unsolicited addition", "undocumented dependency", or
-"contradiction of stated intent" — a workflow that sends a Slack message or
-email WITHOUT one is the actual bug. The gate is a fixed four-node pattern
+DOMAIN RULE — the approval gate is the DEFAULT on this platform for every
+outbound send of a Slack message or email (DM or channel post, any recipient).
+It is NOT something the user has to request, and when the user did not say
+otherwise its presence is NEVER an "unsolicited addition", "undocumented
+dependency", or "contradiction of stated intent" — a workflow that sends a
+Slack message or email WITHOUT one, absent an explicit user opt-out, is the
+actual bug. The ONE exception: when the user EXPLICITLY asked for certain
+sends to go out automatically with no approval, honoring that is CORRECT (the
+user has acknowledged the tradeoff) — do not flag the missing gate on those
+specific sends, and DO flag a gate wrapped around an explicitly-declined send
+as an intent violation. The gate is a fixed four-node pattern
 ("Get DM Channel ID" -> "Call Approval Workflow" -> "IF Approved" -> "No
 Operation") that calls a pre-existing shared sub-workflow by a fixed ID, so do
 not flag that sub-workflow as unverified/missing/hardcoded either, and do not

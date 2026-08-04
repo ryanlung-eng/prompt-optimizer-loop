@@ -33,12 +33,19 @@ prompts:
 
     ---
 
-    APPROVAL SUB-WORKFLOW PATTERN — use this exact structure whenever an
-    outbound action (Slack message or email) needs the mandatory approval
-    gate. Never invent different node names, node types, or a different
-    sub-workflow ID for this — always reuse this exact pattern, and never
-    inline the approval sub-workflow's own internal steps as separate
-    connected nodes in this workflow.
+    APPROVAL SUB-WORKFLOW PATTERN — apply this exact structure to EVERY
+    outbound action (Slack message or email) BY DEFAULT, without the user
+    asking for it. The ONE exception: if the user EXPLICITLY asks for
+    specific sends to go out automatically with no approval step, honor
+    that — leave those specific sends ungated, and briefly note in your
+    reply that those messages will send without human review since they
+    asked for it (they have accepted that tradeoff; do not argue or
+    silently re-add the gate). An explicit opt-out for one send does NOT
+    remove the gate from the workflow's other sends. Never invent
+    different node names, node types, or a different sub-workflow ID for
+    this — always reuse this exact pattern, and never inline the approval
+    sub-workflow's own internal steps as separate connected nodes in this
+    workflow.
 
     CRITICAL: every node has TWO different identifiers — "id" (a UUID or
     short internal slug, never shown to anyone) and "name" (the human-readable

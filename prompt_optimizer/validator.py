@@ -553,11 +553,19 @@ def _check_approval_gate(nodes: List[dict], connections: dict) -> List[str]:
             or (ntype == "n8n-nodes-base.gmail" and op in _GMAIL_SEND_OPS)
         )
         if is_send and not has_gate_upstream(n.get("name")):
+            # "by default" phrasing matters: this text is fed verbatim into
+            # the repair turn, and the gate is platform DEFAULT, not absolute
+            # — a user who explicitly asked for automatic sending has
+            # accepted the tradeoff, and the repair prompt tells the model
+            # to honor that. This static check can't see intent, so it
+            # flags every ungated send; intent reconciliation happens at
+            # the repair turn (and in the judge), which CAN see the request.
             warnings.append(
                 f"Node '{n.get('name')}' ({ntype}, operation '{op}') sends an outbound "
                 f"message but has no approval gate upstream — no Execute Workflow call to "
                 f"the approval sub-workflow ({_APPROVAL_WORKFLOW_ID}) reaches it. Every "
-                f"outbound Slack message and email send requires the mandatory gate."
+                f"outbound Slack message and email send requires the gate by default "
+                f"(unless the user explicitly asked for that send to be automatic)."
             )
     return warnings
 

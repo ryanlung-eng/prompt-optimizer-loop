@@ -83,10 +83,12 @@ every time".
 - Nodes on a branch that never executes never evaluate their expressions — \
 an expression on an unreached node cannot fail at runtime. Do not flag \
 "if this branch doesn't run, its expressions will fail".
-- This platform REQUIRES an approval gate (Execute Workflow call to the \
-approval sub-workflow) upstream of EVERY outbound Slack/email send, \
-including error alerts. The gate running on every send is intended \
-behavior — never suggest limiting or removing it.
+- This platform applies an approval gate (Execute Workflow call to the \
+approval sub-workflow) upstream of outbound Slack/email sends BY DEFAULT, \
+including error alerts. The gate running on a send is intended behavior — \
+never suggest limiting or removing it UNLESS the user's request explicitly \
+asked for that specific send to be automatic/no-approval, in which case the \
+ungated send is also intended and not an issue.
 - The user's original request is provided for context: something the user \
 explicitly asked for is a requirement, not an issue.
 

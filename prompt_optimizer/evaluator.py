@@ -518,15 +518,29 @@ class WorkflowEvaluator:
                 if repairable and not layer2_repaired and not last_turn:
                     layer2_repaired = True
                     warn_text = "; ".join(repairable)
+                    # "unless I explicitly asked otherwise": these checks are
+                    # graph-static and can't see intent, but the model CAN —
+                    # it has the whole conversation. The approval gate in
+                    # particular is platform DEFAULT, not absolute: a user
+                    # who explicitly requested automatic/no-approval sending
+                    # has accepted the tradeoff, and re-gating those sends is
+                    # itself an intent violation (confirmed by a benchmark
+                    # run where blanket re-gating turned explicit auto-send
+                    # requests into judge blockers). The one-shot cap means a
+                    # justified partial fix is accepted next turn either way.
                     reply = (
-                        f"That imports cleanly, but it violates required "
-                        f"platform rules: {warn_text}. Fix ONLY these "
-                        f"specific violations — do not restructure, rename, "
-                        f"or rewrite any other part of the workflow. Output "
-                        f"ONLY the corrected workflow JSON — start your "
-                        f"reply immediately with '{{' and end with '}}'. Do "
-                        f"not explain or write any prose before or after "
-                        f"the JSON."
+                        f"That imports cleanly, but automated checks flagged "
+                        f"platform-rule violations: {warn_text}. Fix these "
+                        f"specific issues UNLESS my original request "
+                        f"explicitly asked for the flagged behavior (e.g. I "
+                        f"asked for certain messages to send automatically "
+                        f"with no approval — in that case leave those exact "
+                        f"sends as they are and fix only the rest). Do not "
+                        f"restructure, rename, or rewrite any other part of "
+                        f"the workflow. Output ONLY the corrected workflow "
+                        f"JSON — start your reply immediately with '{{' and "
+                        f"end with '}}'. Do not explain or write any prose "
+                        f"before or after the JSON."
                     )
                     if retrieve_on_repair is not None:
                         extra = await retrieve_on_repair(warn_text)

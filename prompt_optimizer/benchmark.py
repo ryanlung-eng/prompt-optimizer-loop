@@ -249,6 +249,8 @@ _LAYER2_WARNING_CATEGORIES = [
     ("approval gate missing", lambda w: "no approval gate upstream" in w),
     ("possible self-loop risk", lambda w: w.startswith("Possible infinite-loop risk")),
     ("placeholder identity guard", lambda w: "silently disabling the loop protection" in w),
+    ("non-tool node wired as ai_tool", lambda w: "n8n will not expose it to the agent" in w),
+    ("output parser disabled", lambda w: "n8n silently ignores the connected parser" in w),
 ]
 
 

@@ -64,6 +64,32 @@ say nothing about it. If you are not confident something is actually wrong, \
 leave it out — a false positive here sends the model chasing a problem \
 that doesn't exist.
 
+VERIFIED PLATFORM FACTS — these override your own priors about n8n; every \
+one of them was previously flagged (wrongly) by a checker like you, and each \
+wrong flag sent the builder off breaking a correct workflow:
+- With a Structured Output Parser attached, an AI Agent's output item is \
+ALWAYS { "output": <parsed object> }. References like $json.output.field or \
+$('AI Agent').item.json.output.field are CORRECT — never flag them.
+- $('Node Name') references resolve from executed-node data regardless of \
+how many nodes sit between the referenced node and the current one — \
+"the data context may not be preserved" is not a real n8n failure mode. \
+Only flag a reference when the referenced node may genuinely NOT HAVE \
+EXECUTED on a path that reaches the expression (mutually exclusive branch, \
+error-only branch).
+- A node with "onError": "continueErrorOutput" has a SECOND output (index \
+1) that fires ONLY when the node errors. A connection from output index 1 \
+is an error branch, not a parallel always-on branch — do not claim it "runs \
+every time".
+- Nodes on a branch that never executes never evaluate their expressions — \
+an expression on an unreached node cannot fail at runtime. Do not flag \
+"if this branch doesn't run, its expressions will fail".
+- This platform REQUIRES an approval gate (Execute Workflow call to the \
+approval sub-workflow) upstream of EVERY outbound Slack/email send, \
+including error alerts. The gate running on every send is intended \
+behavior — never suggest limiting or removing it.
+- The user's original request is provided for context: something the user \
+explicitly asked for is a requirement, not an issue.
+
 Return ONLY valid JSON: {"issues": ["<node name>: <specific problem and \
 why it would actually fail at runtime>", ...]} — empty list if none of the \
 three categories have a real issue.
@@ -80,13 +106,25 @@ async def check_execution(
     endpoint_url: str,
     headers: dict,
     workflow_json_text: str,
+    user_request: str = "",
 ) -> List[str]:
     """
     Returns a list of issue strings (empty if none found, or if the check
     itself failed for any reason — fails open, matching relevance_filter.py:
     a broken check must degrade to "no check ran," never to "block every
     workflow" or crash the generation loop it's embedded in.
+
+    user_request gives the checker the request the workflow is FOR. Added
+    after a live benchmark showed the blind checker flagging intentional,
+    user-required behavior as bugs (e.g. "the approval workflow will run on
+    every review" — which is exactly what the platform mandates).
     """
+    user_content = f"Workflow JSON:\n{workflow_json_text}"
+    if user_request.strip():
+        user_content = (
+            f"The user's original request this workflow implements:\n"
+            f"{user_request}\n\n{user_content}"
+        )
     try:
         resp = await client.post(
             endpoint_url,
@@ -94,7 +132,7 @@ async def check_execution(
             json={
                 "messages": [
                     {"role": "system", "content": _EXECUTION_CHECK_SYSTEM},
-                    {"role": "user", "content": f"Workflow JSON:\n{workflow_json_text}"},
+                    {"role": "user", "content": user_content},
                 ],
                 "max_tokens": 800,
                 "temperature": 0.0,

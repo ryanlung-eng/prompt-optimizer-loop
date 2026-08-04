@@ -94,6 +94,22 @@ def _looks_like_rate_limit_message(content: str) -> bool:
     return any(phrase in lowered for phrase in _RATE_LIMIT_PHRASES)
 
 
+# Layer-2 warning categories trusted enough to trigger a repair turn in
+# _run_conversation. Matched by substring against validator.py's warning
+# text — each marker is a distinctive fragment of exactly one check's
+# message. Deliberately a whitelist: every warning class here is a
+# deterministic, ground-truth-backed graph check (zero LLM judgment), so
+# feeding it back cannot send the model chasing a hallucinated problem.
+# typeVersion staleness advisories are excluded on purpose — they can be
+# false alarms from a local package older than the live instance.
+_REPAIRABLE_WARNING_MARKERS = (
+    "no approval gate upstream",             # _check_approval_gate
+    "silently disabling the loop protection",  # _check_placeholder_identity_guard
+    "n8n will not expose it to the agent",   # _check_ai_tool_wiring
+    "n8n silently ignores the connected parser",  # _check_output_parser_disabled
+)
+
+
 def _looks_like_truncated_json(response: str) -> bool:
     """
     True when a response unambiguously ATTEMPTED a workflow JSON but got cut
@@ -377,7 +393,7 @@ class WorkflowEvaluator:
         self, client: httpx.AsyncClient, system_prompt: str, inp: SyntheticInput,
         endpoint_url: Optional[str] = None, use_responses_api: bool = True,
         retrieve_on_repair: Optional[Callable[[str], Awaitable[str]]] = None,
-        execution_checker: Optional[Callable[[str], Awaitable[List[str]]]] = None,
+        execution_checker: Optional[Callable[[str, str], Awaitable[List[str]]]] = None,
     ) -> Tuple[str, List[dict]]:
         """
         Runs the KA up to _MAX_TURNS times, answering clarifying questions with
@@ -427,11 +443,29 @@ class WorkflowEvaluator:
         cover every action, missing Merge synchronization) that passes every
         structural check but wouldn't actually work. Returns a list of issue
         strings; a non-empty list is fed back as a repair turn exactly like
-        a structural error, consuming one turn of the shared budget.
+        a structural error, consuming one turn of the shared budget —
+        capped at ONE such repair round per conversation (see the
+        layer2_repaired/exec_checked flags below for why).
+
+        Independent of the checker, ONE repair turn is granted for trusted
+        Layer-2 deterministic warnings (_REPAIRABLE_WARNING_MARKERS) on all
+        arms — the approval-gate/guard/tool-wiring rules the platform
+        already verifies mechanically but previously only reported on.
         """
         endpoint_url = endpoint_url or self._endpoint_url
         conversation = f"User: {inp.text}"
         transcript = [{"role": "user", "content": inp.text}]
+
+        # Both post-validation feedback passes are HARD-CAPPED at one round
+        # each per conversation. The execution-checker arm's first benchmark
+        # run demonstrated why: with no cap, a checker that (deterministically,
+        # at temperature 0) kept re-flagging the same complaints burned every
+        # remaining turn in a repair churn loop and returned whatever state
+        # turn 7 happened to be in — strictly worse than accepting the first
+        # valid response. One round means: flag once, let the model fix once,
+        # then accept the result either way.
+        layer2_repaired = False
+        exec_checked = False
 
         for turn in range(_MAX_TURNS):
             resolved = _resolve_prompt(system_prompt, conversation, inp)
@@ -462,46 +496,92 @@ class WorkflowEvaluator:
             # generating a structural error in another.
             structural = validate_workflow_json(response)
             if structural.is_json and structural.valid:
-                if last_turn or execution_checker is None:
+                # Layer-2 deterministic warnings feed ONE repair turn before
+                # acceptance. These are rule-based graph checks with ground
+                # truth behind them (missing approval gate, placeholder-
+                # disabled loop guard, non-tool-capable ai_tool wiring,
+                # explicitly-disabled output parser) — unlike the LLM
+                # execution checker below, they cannot hallucinate an issue,
+                # which is what makes them safe to hand repair authority.
+                # Previously these were computed AFTER the conversation
+                # ended, as metrics only — the pipeline knew, mechanically,
+                # that a workflow violated the platform's hardest rules and
+                # returned it anyway; missing approval gates were the single
+                # largest Layer-3 blocker class in every benchmark arm.
+                # typeVersion advisories are deliberately NOT repairable:
+                # they can be false alarms from a stale local package, and
+                # "fixing" them would mean downgrading correct workflows.
+                repairable = [
+                    w for w in structural.warnings
+                    if any(m in w for m in _REPAIRABLE_WARNING_MARKERS)
+                ]
+                if repairable and not layer2_repaired and not last_turn:
+                    layer2_repaired = True
+                    warn_text = "; ".join(repairable)
+                    reply = (
+                        f"That imports cleanly, but it violates required "
+                        f"platform rules: {warn_text}. Fix ONLY these "
+                        f"specific violations — do not restructure, rename, "
+                        f"or rewrite any other part of the workflow. Output "
+                        f"ONLY the corrected workflow JSON — start your "
+                        f"reply immediately with '{{' and end with '}}'. Do "
+                        f"not explain or write any prose before or after "
+                        f"the JSON."
+                    )
+                    if retrieve_on_repair is not None:
+                        extra = await retrieve_on_repair(warn_text)
+                        if extra:
+                            reply += (
+                                "\n\nAdditional reference documentation that "
+                                f"may help fix this specific problem:\n\n{extra}"
+                            )
+                elif last_turn or execution_checker is None or exec_checked:
                     return response, transcript
-                # Structurally valid, but not yet accepted — give the
-                # narrow execution-trace checker (see execution_checker.py)
-                # a chance to catch the "right node types, wrong runtime
-                # behavior" class of bug before this is returned as final.
-                exec_issues = await execution_checker(response)
-                if not exec_issues:
-                    return response, transcript
-                issues_text = "; ".join(exec_issues)
-                # Confirmed via a live benchmark run: this repair turn
-                # previously had NO retrieval grounding (unlike the
-                # structural-error path below) and no scoping constraint —
-                # the model, told only "you need a real Merge node here"
-                # with nothing else to go on, invented a plausible-looking
-                # but nonexistent parameter (combinationMode) rather than
-                # using the real ones, and the open-ended "fix this" framing
-                # invited a broader rewrite than the one flagged issue
-                # warranted. Both fixed below: retrieve_on_repair gives it
-                # real docs for the SPECIFIC finding, and the reply now
-                # explicitly scopes the fix to a patch, not a rewrite.
-                reply = (
-                    f"That parses and passes structural checks, but tracing "
-                    f"through its actual execution surfaced real problems: "
-                    f"{issues_text}. Fix ONLY the specific node(s) and "
-                    f"issue(s) named above — do not restructure, rename, or "
-                    f"rewrite any other part of the workflow. Output ONLY "
-                    f"the corrected workflow JSON — start your reply "
-                    f"immediately with '{{' and end with '}}'. Do not "
-                    f"diagnose the problem, explain your reasoning, or write "
-                    f"any prose before or after the JSON; every token spent "
-                    f"explaining is a token not spent on the workflow itself."
-                )
-                if retrieve_on_repair is not None:
-                    extra = await retrieve_on_repair(issues_text)
-                    if extra:
-                        reply += (
-                            "\n\nAdditional reference documentation that may "
-                            f"help fix this specific problem:\n\n{extra}"
-                        )
+                else:
+                    # Structurally valid, no (unrepaired) trusted warnings —
+                    # give the narrow execution-trace checker (see
+                    # execution_checker.py) one chance to catch the "right
+                    # node types, wrong runtime behavior" class of bug.
+                    # exec_checked caps this at ONE round: the checker's
+                    # first live run showed it re-flagging the same (often
+                    # false-positive) complaints deterministically forever,
+                    # so after one repair attempt the next valid response is
+                    # accepted no matter what the checker thinks of it.
+                    exec_issues = await execution_checker(response, inp.text)
+                    if not exec_issues:
+                        return response, transcript
+                    exec_checked = True
+                    issues_text = "; ".join(exec_issues)
+                    # Confirmed via a live benchmark run: this repair turn
+                    # previously had NO retrieval grounding (unlike the
+                    # structural-error path below) and no scoping constraint —
+                    # the model, told only "you need a real Merge node here"
+                    # with nothing else to go on, invented a plausible-looking
+                    # but nonexistent parameter (combinationMode) rather than
+                    # using the real ones, and the open-ended "fix this" framing
+                    # invited a broader rewrite than the one flagged issue
+                    # warranted. Both fixed below: retrieve_on_repair gives it
+                    # real docs for the SPECIFIC finding, and the reply now
+                    # explicitly scopes the fix to a patch, not a rewrite.
+                    reply = (
+                        f"That parses and passes structural checks, but tracing "
+                        f"through its actual execution surfaced real problems: "
+                        f"{issues_text}. Fix ONLY the specific node(s) and "
+                        f"issue(s) named above — do not restructure, rename, or "
+                        f"rewrite any other part of the workflow. Output ONLY "
+                        f"the corrected workflow JSON — start your reply "
+                        f"immediately with '{{' and end with '}}'. Do not "
+                        f"diagnose the problem, explain your reasoning, or write "
+                        f"any prose before or after the JSON; every token spent "
+                        f"explaining is a token not spent on the workflow itself."
+                    )
+                    if retrieve_on_repair is not None:
+                        extra = await retrieve_on_repair(issues_text)
+                        if extra:
+                            reply += (
+                                "\n\nAdditional reference documentation that may "
+                                f"help fix this specific problem:\n\n{extra}"
+                            )
             elif structural.is_json:
                 if last_turn:
                     return response, transcript
@@ -823,12 +903,15 @@ class WorkflowEvaluator:
 
         execution_checker = None
         if execution_check:
-            async def execution_checker(workflow_json_text: str) -> List[str]:
+            async def execution_checker(workflow_json_text: str, user_request: str) -> List[str]:
                 # Same cheap/fast model as the relevance filter — this is a
                 # narrow, single-purpose check, not a reasoning-heavy review.
+                # user_request rides along so the checker stops flagging
+                # behavior the user explicitly asked for as a bug.
                 async with httpx.AsyncClient() as check_client:
                     return await check_execution(
-                        check_client, filter_endpoint_url, filter_headers, workflow_json_text,
+                        check_client, filter_endpoint_url, filter_headers,
+                        workflow_json_text, user_request,
                     )
 
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:

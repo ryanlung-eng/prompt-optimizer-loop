@@ -447,6 +447,34 @@ these override them. Flagging any of the following as a bug is a false positive:
     workflow using `update` + `updateFields.statusId` to perform a status
     change as broken or claim it "needs a dedicated transition operation" —
     that operation is the hallucination, not the fix.
+  • AI Agent + Structured Output Parser output shape — SETTLED, verified by
+    executing a live workflow on this platform's own n8n instance: when a
+    Structured Output Parser is attached, the agent's main output item is
+    ALWAYS `{ "output": <the parsed object> }`. References like
+    `$json.output.<field>` or `$('AI Agent').item.json.output.<field>` are
+    CORRECT — do NOT flag them as fragile, "possibly nested differently",
+    "may be a string", or "depends on agent version". Do not hedge both
+    ways. The REAL defects on this topic are the opposite patterns: reading
+    a parsed field FLAT off the agent output (e.g. `$json.decision` instead
+    of `$json.output.decision`), or calling JSON.parse on `$json.output`
+    without a typeof guard (it is already an object when the parser ran).
+  • The agent parameter `hasOutputParser: true` is what the n8n UI writes
+    when a parser is attached, but its ABSENCE is harmless — confirmed in
+    n8n core: `getNodeParameter('hasOutputParser', 0, true)` falls back to
+    TRUE when the parameter is missing, so a wired parser is still used. Do
+    NOT flag a missing `hasOutputParser`. Only an EXPLICIT
+    `"hasOutputParser": false` alongside a wired ai_outputParser connection
+    is a real defect (the parser is silently ignored).
+  • Regular n8n-nodes-base nodes CAN be wired to an AI Agent via ai_tool
+    connections when the node is tool-capable — n8n auto-wraps them as
+    tools. Confirmed from the installed package's own manifest
+    (`usableAsTool: true`): Jira, Google Sheets (v3+), Slack (v2+), Gmail,
+    and most other app nodes. Do NOT flag "a base Jira/Sheets/Slack node
+    cannot be an agent tool" — that claim is false on this platform's n8n
+    version. The exceptions that are NOT tool-capable (verified
+    `usableAsTool` absent): HTTP Request (use the dedicated
+    `@n8n/n8n-nodes-langchain.toolHttpRequest`), Code (use `toolCode`),
+    Merge, Set, IF/Switch. Only flag ai_tool wiring for those.
 
 If you are not certain a claim about node behavior is true, leave it out. A
 confident-sounding wrong finding is worse than a missed one — these reviews are

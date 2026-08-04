@@ -782,6 +782,109 @@ def _check_placeholder_identity_guard(nodes: List[dict]) -> List[str]:
     return warnings
 
 
+# Cached result of _tool_capable_base_nodes(): the set of n8n-nodes-base short
+# names any of whose declared versions carry usableAsTool: true in the
+# installed package's manifest, or None while unloaded / if the manifest is
+# unavailable (fail open — same posture as _check_schema_issues).
+_tool_capable_cache: Optional[frozenset] = None
+_tool_capable_load_failed = False
+
+
+def _tool_capable_base_nodes() -> Optional[frozenset]:
+    global _tool_capable_cache, _tool_capable_load_failed
+    if _tool_capable_cache is not None or _tool_capable_load_failed:
+        return _tool_capable_cache
+    manifest_rel = Path("node_modules") / "n8n-nodes-base" / "dist" / "types" / "nodes.json"
+    for base in (_LOCAL_CACHE_DIR, _SCHEMA_CHECK_SCRIPT.parent):
+        path = base / manifest_rel
+        if not path.exists():
+            continue
+        try:
+            entries = json.loads(path.read_text())
+            _tool_capable_cache = frozenset(
+                e["name"] for e in entries
+                if isinstance(e, dict) and e.get("usableAsTool") is True
+            )
+            return _tool_capable_cache
+        except (OSError, ValueError, KeyError):
+            break
+    _tool_capable_load_failed = True
+    return None
+
+
+def _check_ai_tool_wiring(nodes: List[dict], connections: dict) -> List[str]:
+    """Advisory: a regular n8n-nodes-base node wired to an agent via an
+    ai_tool connection only works if that node type is tool-capable
+    (usableAsTool: true in the package manifest — n8n auto-wraps those as
+    tools). Most app nodes ARE tool-capable (Jira, Google Sheets, Slack,
+    Gmail, Calendar, Drive...), so this deliberately does NOT flag them —
+    an LLM reviewer repeatedly got that backwards, flagging valid tool
+    wiring as broken. What it flags is the confirmed-real inverse: types
+    with NO tool-capable version anywhere in the manifest (httpRequest,
+    code, set, merge, if/switch...) wired as ai_tool, where n8n will not
+    expose the node to the agent at all and the dedicated LangChain tool
+    node (toolHttpRequest, toolCode, ...) is the correct choice. Warning
+    rather than error because the local package can lag the live instance,
+    and a node type could have GAINED tool support in a newer version —
+    same posture as the typeVersion advisory."""
+    capable = _tool_capable_base_nodes()
+    if capable is None:
+        return []
+    by_name = {n.get("name"): n for n in nodes if isinstance(n, dict)}
+    warnings = []
+    for src, conn_type, _out_idx, _target, _in_idx in _iter_connection_targets(connections):
+        if conn_type != "ai_tool":
+            continue
+        node = by_name.get(src)
+        ntype = (node or {}).get("type") or ""
+        if not ntype.startswith("n8n-nodes-base."):
+            continue  # LangChain tool* nodes and CUSTOM.* are out of scope here
+        short = ntype[len("n8n-nodes-base."):]
+        if short not in capable:
+            warnings.append(
+                f"Node '{src}' ({ntype}) is wired to an agent as an ai_tool, but no "
+                f"version of this node type is tool-capable (no usableAsTool in "
+                f"n8n's manifest) — n8n will not expose it to the agent, so the "
+                f"agent cannot call it. Use the dedicated LangChain tool node "
+                f"instead (e.g. @n8n/n8n-nodes-langchain.toolHttpRequest for HTTP "
+                f"calls, toolCode for code, toolWorkflow for sub-workflows). "
+                f"App nodes like Jira, Google Sheets, Slack and Gmail ARE "
+                f"tool-capable and fine to wire directly."
+            )
+    return warnings
+
+
+def _check_output_parser_disabled(nodes: List[dict], connections: dict) -> List[str]:
+    """Advisory: an agent with a Structured Output Parser wired via
+    ai_outputParser, but parameters.hasOutputParser EXPLICITLY false —
+    n8n silently ignores the connected parser in that case (verified in
+    n8n core: getOptionalOutputParser checks this parameter before using
+    the connection). A MISSING hasOutputParser is deliberately not
+    flagged: the runtime falls back to true when the parameter is absent
+    (`getNodeParameter('hasOutputParser', 0, true)` resolves the fallback,
+    not the description default), so absence is harmless — only an
+    explicit false disarms the parser."""
+    receiving = {
+        target for _src, conn_type, _oi, target, _ii
+        in _iter_connection_targets(connections)
+        if conn_type == "ai_outputParser"
+    }
+    warnings = []
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("name") not in receiving:
+            continue
+        if (n.get("parameters") or {}).get("hasOutputParser") is False:
+            warnings.append(
+                f"Node '{n.get('name')}' has a Structured Output Parser wired via "
+                f"ai_outputParser, but parameters.hasOutputParser is explicitly "
+                f"false — n8n silently ignores the connected parser when this is "
+                f"false, so the agent's output will NOT be parsed/validated. Set "
+                f"hasOutputParser to true (or remove it; absent defaults to using "
+                f"the connected parser)."
+            )
+    return warnings
+
+
 @dataclass
 class StructuralResult:
     is_json: bool = False
@@ -1102,5 +1205,7 @@ def validate_workflow_json(text: str) -> StructuralResult:
     # Advisory only — heuristic, never affects checks/.valid.
     result.warnings.extend(_check_trigger_self_loop_risk(nodes, connections))
     result.warnings.extend(_check_placeholder_identity_guard(nodes))
+    result.warnings.extend(_check_ai_tool_wiring(nodes, connections))
+    result.warnings.extend(_check_output_parser_disabled(nodes, connections))
 
     return result

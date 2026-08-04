@@ -139,11 +139,20 @@ def _normalize_issues(raw) -> Tuple[List[str], List[str]]:
 def _format_transcript(transcript: List[dict]) -> str:
     """Renders the multi-turn transcript as readable User:/Assistant: turns,
     so the judge can verify claims against what actually happened in the
-    conversation instead of only ever seeing the opening message."""
-    if not transcript:
-        return "(single-turn — no follow-up conversation occurred)"
+    conversation instead of only ever seeing the opening message.
+
+    Only user/ka entries are conversation — anything else (e.g. the
+    "retrieval_meta" diagnostics entry evaluator.py prepends for the
+    custom-RAG arms) is pipeline internals and must not be shown to the
+    judge as if the user or assistant said it."""
     role_label = {"user": "User", "ka": "Assistant"}
-    return "\n\n".join(f"{role_label.get(t['role'], t['role'])}: {t['content']}" for t in transcript)
+    lines = [
+        f"{role_label[t['role']]}: {t['content']}"
+        for t in transcript if t.get("role") in role_label
+    ]
+    if not lines:
+        return "(single-turn — no follow-up conversation occurred)"
+    return "\n\n".join(lines)
 
 # ------------------------------------------------------------------ #
 # Judge prompts                                                       #

@@ -94,6 +94,20 @@ def _looks_like_rate_limit_message(content: str) -> bool:
     return any(phrase in lowered for phrase in _RATE_LIMIT_PHRASES)
 
 
+def _looks_like_truncated_json(response: str) -> bool:
+    """
+    True when a response unambiguously ATTEMPTED a workflow JSON but got cut
+    off before it closed. validate_workflow_json's find-anywhere parse only
+    recognizes COMPLETE {...} blocks, so a truncated workflow reports
+    is_json=False — indistinguishable, to the repair loop's routing, from a
+    prose reply that never attempted JSON at all. The signature is specific:
+    the reply starts with '{' (per the repair-prompt instructions) and
+    contains a "nodes" key (every n8n workflow does), yet nothing parsed.
+    """
+    stripped = response.strip()
+    return stripped.startswith("{") and '"nodes"' in stripped
+
+
 def _synthetic_user_id(inp: SyntheticInput) -> str:
     """
     A distinct per-input synthetic Slack user ID, not a single shared constant.
@@ -241,8 +255,9 @@ class WorkflowEvaluator:
         system_prompt: str,
         user_message: str,
         use_responses_api: bool = False,
-        max_tokens: int = 1500,
+        max_tokens: Optional[int] = 1500,
         temperature: float = 0.0,
+        timeout: float = 90,
     ) -> str:
         """
         use_responses_api selects the request wire format:
@@ -282,15 +297,20 @@ class WorkflowEvaluator:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ]
+        # max_tokens=None omits the field so the endpoint's own maximum
+        # applies. Confirmed necessary via MLflow traces: a fixed cap of 6000
+        # truncated a ~19.5k-char workflow mid-JSON, and because a truncated
+        # response can't parse at all, the repair loop misread it as "never
+        # attempted JSON" and burned every remaining turn regenerating the
+        # same truncated output (see _looks_like_truncated_json's backstop).
+        payload = {payload_key: messages, "temperature": temperature}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         resp = await client.post(
             endpoint_url,
             headers=self._headers,
-            json={
-                payload_key: messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            },
-            timeout=90,
+            json=payload,
+            timeout=timeout,
         )
         if resp.status_code >= 400:
             raise ValueError(
@@ -415,16 +435,21 @@ class WorkflowEvaluator:
 
         for turn in range(_MAX_TURNS):
             resolved = _resolve_prompt(system_prompt, conversation, inp)
-            # A complete workflow with an approval sub-flow can easily need
-            # 8-10+ verbose n8n nodes — 1500 tokens (the old default, still
-            # used for the short simulated-user replies) was truncating the
-            # KA's output mid-generation, producing invalid JSON and
-            # connections referencing nodes that never got emitted.
+            # max_tokens=None: no output cap on workflow generation. Every
+            # fixed cap tried so far eventually truncated a legitimate
+            # workflow mid-JSON (1500 as the original default, then 6000 —
+            # the latter confirmed via MLflow traces on a ~19.5k-char
+            # workflow), and a truncated response is unparseable, so the
+            # repair loop never even sees a valid candidate to fix — it
+            # regenerates the same truncated output every remaining turn.
+            # timeout=300 because uncapped generations can legitimately run
+            # several minutes; 90s was tuned for the capped case.
             # temperature=0: isolates prompt quality from sampling noise
             # during optimization — see _simulate_user_reply for the same rationale.
             response = await self._call(
                 client, endpoint_url, resolved, "",
-                use_responses_api=use_responses_api, max_tokens=6000, temperature=0.0,
+                use_responses_api=use_responses_api, max_tokens=None,
+                temperature=0.0, timeout=300,
             )
             transcript.append({"role": "ka", "content": response})
             last_turn = turn == _MAX_TURNS - 1
@@ -485,13 +510,11 @@ class WorkflowEvaluator:
                 # the model to diagnose the error in prose first — observed
                 # directly in real transcripts ("The core issue is that the
                 # validator treats...", multiple paragraphs of reasoning
-                # before the JSON even starts). That prose eats into the
-                # fixed max_tokens=6000 completion budget, and several
-                # "Invalid JSON: Expecting ',' delimiter" / "Extra data"
-                # parse errors on repair turns are consistent with the JSON
-                # itself getting cut off mid-generation as a result. Telling
-                # the model explicitly to skip the diagnosis reclaims that
-                # budget for the actual output.
+                # before the JSON even starts). Prose before the JSON wastes
+                # generation time and historically (when max_tokens was
+                # capped) pushed the JSON itself past the cap. Telling the
+                # model explicitly to skip the diagnosis keeps the reply to
+                # just the corrected workflow.
                 reply = (
                     f"That didn't work — I tried to import it and got these "
                     f"errors: {error_text}. Output ONLY the corrected "
@@ -510,6 +533,26 @@ class WorkflowEvaluator:
                         )
             elif last_turn:
                 return response, transcript
+            elif _looks_like_truncated_json(response):
+                # Backstop for output that got cut off mid-JSON (endpoint-side
+                # limits can still truncate even with no max_tokens in the
+                # request). A truncated workflow fails to parse AT ALL, so
+                # without this branch it fell through to the simulated-user
+                # reply below — which never tells the model its output was
+                # incomplete, so (at temperature 0) it regenerated the same
+                # truncated workflow every remaining turn. Confirmed via
+                # MLflow traces: 7 identical ~19.5k-char truncated
+                # generations on one scenario. Asking for compact JSON
+                # meaningfully shrinks the output — the truncated trace was
+                # heavily pretty-printed whitespace.
+                reply = (
+                    "Your reply was cut off before the workflow JSON "
+                    "finished — I only received part of it. Send the "
+                    "COMPLETE workflow JSON again, and to keep it short, "
+                    "output it in compact form: no indentation, no "
+                    "newlines between keys, no prose before or after. "
+                    "Start your reply immediately with '{' and end with '}'."
+                )
             else:
                 reply = await self._simulate_user_reply(client, inp.text, response)
 
@@ -816,6 +859,27 @@ class WorkflowEvaluator:
             retrieved_block = build_retrieved_block(kept, len(retrieved), rag_config)
             system_prompt = _assemble_custom_rag_prompt(base_instructions, retrieved_block)
 
+            # Prepended to the transcript (and therefore cached and logged to
+            # MLflow with everything else) so retrieval decisions are
+            # diagnosable after the fact. Added because the query-rewriting
+            # arm regressed on scenarios where the plain-v2 arm was fine, and
+            # the traces couldn't answer WHY — the rewritten query and the
+            # chunk set it retrieved existed nowhere outside this function.
+            # role="retrieval_meta" is deliberately not "user"/"ka": the
+            # judge's transcript formatter and the tracer's turn-pairing both
+            # skip roles they don't recognize, so this never leaks into what
+            # the judge or the model sees.
+            retrieval_meta = {
+                "role": "retrieval_meta",
+                "content": json.dumps({
+                    "retrieval_query": retrieval_query,
+                    "query_was_rewritten": retrieval_query != inp.text,
+                    "kept_sources": sorted({c.source for c in kept}),
+                    "n_retrieved": len(retrieved),
+                    "n_kept": len(kept),
+                }),
+            }
+
             key = self._cache_key(system_prompt, inp, endpoint_url)
             if execution_check:
                 key += ":::execcheck"
@@ -840,6 +904,7 @@ class WorkflowEvaluator:
                         print(f"  Warning: custom-RAG-v2 eval failed for '{inp.text[:60]}…': {cause}")
                         response, transcript = f"[ERROR: {cause}]", []
                     if not response.startswith("[ERROR:"):
+                        transcript = [retrieval_meta] + transcript
                         self._cache[key] = {"response": response, "transcript": transcript}
                         self._save_cache()
                     return inp, response, transcript

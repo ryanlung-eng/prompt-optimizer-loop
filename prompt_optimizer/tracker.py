@@ -306,19 +306,37 @@ class HardBenchmarkTracer:
 
     def _log_scenario(self, arm: str, r: EvalResult) -> None:
         scenario = r.input.category
+        transcript = r.transcript or []
         with mlflow.start_span(name=f"{scenario}::{arm}") as root:
-            root.set_inputs({
+            inputs = {
                 "scenario": scenario,
                 "prompt_text": r.input.text,
                 "expected_behavior": r.input.expected_behavior,
-            })
+            }
+            # evaluator.py's custom-RAG arms prepend a "retrieval_meta"
+            # entry (the actual retrieval query — rewritten or not — and
+            # which chunk sources survived filtering). Surfacing it as a
+            # root-span input makes retrieval drift diagnosable per trace;
+            # previously the rewritten query existed nowhere in MLflow.
+            retrieval_meta = next(
+                (t.get("content") for t in transcript
+                 if t.get("role") == "retrieval_meta"),
+                None,
+            )
+            if retrieval_meta:
+                try:
+                    inputs["retrieval"] = json.loads(retrieval_meta)
+                except (TypeError, ValueError):
+                    inputs["retrieval"] = retrieval_meta
+            root.set_inputs(inputs)
 
-            # transcript always starts with a "user" entry and strictly
-            # alternates user/ka (see WorkflowEvaluator._run_conversation) —
-            # pair each user entry with the ka reply that follows it into one
-            # child span per actual generation call, rather than one span
-            # per raw message.
-            transcript = r.transcript or []
+            # The conversation part of the transcript starts with a "user"
+            # entry and strictly alternates user/ka (see
+            # WorkflowEvaluator._run_conversation) — pair each user entry
+            # with the ka reply that follows it into one child span per
+            # actual generation call, rather than one span per raw message.
+            # Non-conversation roles (retrieval_meta) are skipped by the
+            # role check below.
             turn = 0
             i = 0
             while i < len(transcript):

@@ -89,6 +89,16 @@ including error alerts. The gate running on a send is intended behavior — \
 never suggest limiting or removing it UNLESS the user's request explicitly \
 asked for that specific send to be automatic/no-approval, in which case the \
 ungated send is also intended and not an issue.
+- Split In Batches' "done" output (index 0) accumulates ALL items fed back \
+into the loop across every iteration (live-verified) — aggregating from the \
+done output after a loop is correct; never flag it as "only the last batch".
+- A Merge fed by mutually exclusive branches does NOT deadlock \
+(live-verified): "append" mode emits whatever arrived and the workflow \
+proceeds. The one real problem shape: "combine" mode emits ZERO items when \
+one input never ran, silently skipping everything downstream — flag ONLY \
+that (fix: append mode or combine's include-unpaired option).
+- The Jira transitions lookup returns one item per transition with flat \
+id/name fields (live-verified) — iterating $input.all() on it is correct.
 - The user's original request is provided for context: something the user \
 explicitly asked for is a requirement, not an issue.
 

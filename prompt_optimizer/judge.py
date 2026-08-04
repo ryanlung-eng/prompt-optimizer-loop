@@ -446,6 +446,38 @@ these override them. Flagging any of the following as a bug is a false positive:
     SplitInBatchesV3.node.ts `outputNames: ['done', 'loop']`). Wiring the
     per-batch processing branch to index 1 and the after-the-loop branch to
     index 0 is CORRECT.
+  • Split In Batches "done" output ACCUMULATES — verified by executing a
+    live loop on this platform's own n8n instance (5 items, batchSize 2,
+    processed items fed back into the loop input): when the loop finishes,
+    the done output emits ALL items that were fed back across EVERY
+    iteration (all 5, in order, carrying the per-iteration fields added
+    inside the loop), not just the last batch. Aggregating from the done
+    output after a loop is the CORRECT, sufficient pattern — do NOT claim
+    "the done output only carries the last batch", "results are never
+    accumulated across iterations", or that static-data/sheet persistence
+    is required to collect loop results. Also verified: the node iterates
+    its own internal queue of the ORIGINAL input — feeding processed
+    (transformed) items into the loop-back input does NOT corrupt or
+    replace the remaining batches.
+  • Merge does NOT deadlock when fed by mutually exclusive branches —
+    verified by live execution with an IF whose false branch never ran:
+    n8n executes the Merge once the reachable inputs settle; it never
+    "waits indefinitely" for a branch that cannot run. Never claim a Merge
+    downstream of exclusive IF/Switch branches will hang the workflow.
+    The REAL mode-specific behavior to check instead: in "append" mode the
+    Merge emits whatever items actually arrived (workflow proceeds —
+    correct for "either branch reconverges" shapes); in "combine" (by
+    position) mode it runs but emits ZERO items when one input never
+    arrived (unpaired item dropped), so everything downstream is silently
+    skipped — THAT is the real defect to flag on a combine-mode Merge fed
+    by exclusive branches (fix: append mode, or combine's
+    "include unpaired items" option).
+  • The Jira `transitions` lookup returns ONE ITEM PER TRANSITION, each
+    with flat top-level fields (id, name, to, hasScreen, ...) — verified by
+    live execution against a real issue. Code that iterates
+    `$input.all()` reading `item.json.name`/`item.json.id` is CORRECT; do
+    NOT claim the response is "a single item wrapping a transitions
+    array" or that `$json.transitions` is the real path — it is not.
   • The Jira node has NO "transition" operation — this does not exist on any
     version, confirmed directly against the installed node's declared
     operations. `resource: issue, operation: transitions` (plural) is

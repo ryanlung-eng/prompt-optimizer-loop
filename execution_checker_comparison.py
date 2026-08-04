@@ -1,13 +1,12 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Execution-Trace Checker Comparison — custom_rag vs. custom_rag_v2 vs. custom_rag_v2_checked
+# MAGIC # Custom RAG Pipeline Variants — v1 vs. v2 vs. v2+checker vs. v2+query-rewrite
 # MAGIC
 # MAGIC Rebuilds the index (picks up any pending knowledge-base-upload/ doc
-# MAGIC changes sitting in the Volume) and runs all three hard-scenario
-# MAGIC benchmark arms. Production is deliberately NOT one of them anymore —
-# MAGIC across every run so far the custom RAG pipeline has consistently and
-# MAGIC clearly exceeded it, so this isolates differences BETWEEN the custom
-# MAGIC pipeline variants instead:
+# MAGIC changes sitting in the Volume) and runs all four hard-scenario benchmark
+# MAGIC arms. Production is deliberately NOT one of them — across every run so
+# MAGIC far the custom RAG pipeline has consistently and clearly exceeded it, so
+# MAGIC this isolates differences BETWEEN the custom pipeline variants instead:
 # MAGIC
 # MAGIC 1. **custom_rag** (v1) — same production prompt + plain top-K retrieval,
 # MAGIC    Sonnet generation.
@@ -16,18 +15,31 @@
 # MAGIC    Ibotta's own internal HR Bot's validated production source.
 # MAGIC 3. **custom_rag_v2_checked** — same as (2), plus a narrow, cheap-model
 # MAGIC    (Haiku) execution-trace checker wired directly into the self-repair
-# MAGIC    loop itself (see `execution_checker.py`) — not just a post-hoc
-# MAGIC    measurement. Scoped to exactly one question: would this workflow's
-# MAGIC    cross-node references, approval/self-loop guards, and Merge/
-# MAGIC    synchronization points actually behave correctly if traced step by
-# MAGIC    step? If it finds something, that feeds back as a real repair turn
-# MAGIC    before the workflow is ever accepted as final.
+# MAGIC    loop itself (see `execution_checker.py`). Scoped to one question:
+# MAGIC    would this workflow's cross-node references, approval/self-loop
+# MAGIC    guards, and Merge/synchronization points actually behave correctly if
+# MAGIC    traced step by step? A first run of this arm showed it net-NEGATIVE
+# MAGIC    (more blockers than plain v2) — traced to the repair turn having no
+# MAGIC    retrieval grounding, so a flagged architectural issue (e.g. "needs a
+# MAGIC    real Merge node") got fixed by the model inventing a plausible-looking
+# MAGIC    but nonexistent parameter instead of using the real one. Now fixed:
+# MAGIC    the repair turn re-retrieves docs targeted at the specific finding
+# MAGIC    (same mechanism the structural-error repair path already used), and
+# MAGIC    the reply explicitly scopes the fix to a patch, not a rewrite.
+# MAGIC 4. **custom_rag_v2_rewritten** — same as (2), plus a cheap-model query
+# MAGIC    rewrite (see `query_rewriter.py`) that translates the raw user
+# MAGIC    request into retrieval-optimized phrasing before the initial
+# MAGIC    retrieval call, targeting vocabulary mismatch between how users phrase
+# MAGIC    requests and how the KB is written. Only the retrieval query is
+# MAGIC    rewritten — the conversation the model actually sees still uses the
+# MAGIC    user's own original wording.
 # MAGIC
-# MAGIC **Cost/latency note:** arm 3 adds a Haiku call on every turn that passes
-# MAGIC structural validation (not just failures), plus a full extra repair-turn
-# MAGIC call whenever it finds something — expect this arm to run slower and use
-# MAGIC more tokens than plain v2. That's the tradeoff being measured here: does
-# MAGIC the extra cost actually buy a measurable drop in blockers?
+# MAGIC **Cost/latency note:** arms 3 and 4 each add a Haiku call per turn beyond
+# MAGIC what plain v2 does (arm 3 on every structurally-valid turn, plus a full
+# MAGIC extra repair-turn call whenever it finds something; arm 4 once per
+# MAGIC scenario before the initial retrieval) — expect both to run slower and
+# MAGIC use more tokens than plain v2. That's the tradeoff being measured here:
+# MAGIC does either extra cost actually buy a measurable improvement.
 # MAGIC
 # MAGIC A re-embed is included as standard practice (safe to re-run any time the
 # MAGIC docs/examples corpus changes) — same delete-and-recreate flow as
@@ -218,10 +230,9 @@ for r in _smoke["result"]["data_array"]:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Phase 2 — Benchmark: custom_rag vs. custom_rag_v2 vs. custom_rag_v2_checked
-# MAGIC `benchmark.run_hard()` already runs all three arms and prints both
-# MAGIC qualitative win/loss comparisons (custom_rag-vs-custom_rag_v2 and
-# MAGIC custom_rag_v2-vs-custom_rag_v2_checked) — no separate wiring needed here.
+# MAGIC ## Phase 2 — Benchmark: all four arms
+# MAGIC `benchmark.run_hard()` already runs all four arms and prints qualitative
+# MAGIC win/loss comparisons for each pair — no separate wiring needed here.
 
 # COMMAND ----------
 
@@ -293,40 +304,60 @@ for r in results["custom_rag"]:
 
 # COMMAND ----------
 
-# MAGIC %md ### Did the checker actually change the outcome on any shared scenario?
-# MAGIC Scenario-by-scenario diff of blocker counts between custom_rag_v2 and
-# MAGIC custom_rag_v2_checked — the direct answer to "did this help."
+# MAGIC %md ### Inspect every custom_rag_v2_rewritten failure/warning/soundness issue
+# MAGIC The query-rewriting arm — compare against the custom_rag_v2 section above
+# MAGIC on the SAME scenarios to see what, if anything, the rewrite changed.
 
 # COMMAND ----------
 
-v2_by_scenario = {r.input.category: r for r in results["custom_rag_v2"]}
-checked_by_scenario = {r.input.category: r for r in results["custom_rag_v2_checked"]}
+for r in results["custom_rag_v2_rewritten"]:
+    if not r.structural.valid or r.structural.warnings or r.soundness_issues:
+        print("Scenario:", r.input.category)
+        print("Structural errors:", r.structural.errors)
+        print("Warnings (Layer 2):", r.structural.warnings)
+        print("Soundness issues (Layer 3):", r.soundness_issues)
+        print("Actual response:", r.actual_response[:2000])
+        print("---")
 
-improved, regressed, unchanged = [], [], []
-for scenario, v2_r in v2_by_scenario.items():
-    checked_r = checked_by_scenario.get(scenario)
-    if checked_r is None:
-        continue
-    v2_blockers = len(v2_r.soundness_blockers)
-    checked_blockers = len(checked_r.soundness_blockers)
-    if checked_blockers < v2_blockers:
-        improved.append((scenario, v2_blockers, checked_blockers))
-    elif checked_blockers > v2_blockers:
-        regressed.append((scenario, v2_blockers, checked_blockers))
-    else:
-        unchanged.append((scenario, v2_blockers, checked_blockers))
+# COMMAND ----------
 
-print(f"Improved (fewer blockers with checker): {len(improved)}")
-for s, before, after in improved:
-    print(f"  {s}: {before} -> {after} blockers")
+# MAGIC %md ### Did either variant actually change the outcome on any shared scenario?
+# MAGIC Scenario-by-scenario diff of blocker counts against the custom_rag_v2
+# MAGIC baseline — the direct answer to "did this help," for both toggles.
 
-print(f"\nRegressed (more blockers with checker): {len(regressed)}")
-for s, before, after in regressed:
-    print(f"  {s}: {before} -> {after} blockers")
+# COMMAND ----------
 
-print(f"\nUnchanged: {len(unchanged)}")
-for s, before, after in unchanged:
-    print(f"  {s}: {before} blockers (both arms)")
+def diff_against_v2(variant_arm: str):
+    v2_by_scenario = {r.input.category: r for r in results["custom_rag_v2"]}
+    variant_by_scenario = {r.input.category: r for r in results[variant_arm]}
+
+    improved, regressed, unchanged = [], [], []
+    for scenario, v2_r in v2_by_scenario.items():
+        variant_r = variant_by_scenario.get(scenario)
+        if variant_r is None:
+            continue
+        v2_blockers = len(v2_r.soundness_blockers)
+        variant_blockers = len(variant_r.soundness_blockers)
+        if variant_blockers < v2_blockers:
+            improved.append((scenario, v2_blockers, variant_blockers))
+        elif variant_blockers > v2_blockers:
+            regressed.append((scenario, v2_blockers, variant_blockers))
+        else:
+            unchanged.append((scenario, v2_blockers, variant_blockers))
+
+    print(f"[{variant_arm}] Improved (fewer blockers): {len(improved)}")
+    for s, before, after in improved:
+        print(f"  {s}: {before} -> {after} blockers")
+    print(f"\n[{variant_arm}] Regressed (more blockers): {len(regressed)}")
+    for s, before, after in regressed:
+        print(f"  {s}: {before} -> {after} blockers")
+    print(f"\n[{variant_arm}] Unchanged: {len(unchanged)}")
+    for s, before, after in unchanged:
+        print(f"  {s}: {before} blockers (both arms)")
+
+diff_against_v2("custom_rag_v2_checked")
+print("\n" + "=" * 80 + "\n")
+diff_against_v2("custom_rag_v2_rewritten")
 
 # COMMAND ----------
 
@@ -337,7 +368,7 @@ for s, before, after in unchanged:
 # COMMAND ----------
 
 _MARKERS = ("lmchatopenai", "nodes-langchain.openai", "nodes-base.openai", "gpt-4")
-for arm in ("custom_rag", "custom_rag_v2", "custom_rag_v2_checked"):
+for arm in ("custom_rag", "custom_rag_v2", "custom_rag_v2_checked", "custom_rag_v2_rewritten"):
     hits = [
         r.input.category for r in results[arm]
         if any(m in (r.actual_response or "").lower() for m in _MARKERS)

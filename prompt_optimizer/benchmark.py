@@ -232,11 +232,12 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 # itself — see execution_checker.py — not just a post-hoc measurement). #
 # --------------------------------------------------------------------- #
 
-_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_checked"]
+_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_checked", "custom_rag_v2_rewritten"]
 _HARD_ARM_LABELS = {
     "custom_rag": "Custom RAG (same prompt + retrieved big-corpus context)",
     "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
     "custom_rag_v2_checked": "Custom RAG v2 + execution-trace checker",
+    "custom_rag_v2_rewritten": "Custom RAG v2 + query rewriting",
 }
 
 # Every string in StructuralResult.warnings comes from exactly one of these
@@ -325,6 +326,14 @@ async def run_hard_benchmark(
     )
     results["custom_rag_v2_checked"] = await judge.evaluate_batch(pairs_v2_checked)
     _trace("custom_rag_v2_checked", results["custom_rag_v2_checked"])
+
+    console.print(f"  Running arm: custom_rag_v2_rewritten (+ query rewriting) "
+                  f"on {len(inputs)} hard scenarios…")
+    pairs_v2_rewritten = await evaluator.run_batch_custom_rag_v2(
+        base_instructions, inputs, rag_config, query_rewrite=True,
+    )
+    results["custom_rag_v2_rewritten"] = await judge.evaluate_batch(pairs_v2_rewritten)
+    _trace("custom_rag_v2_rewritten", results["custom_rag_v2_rewritten"])
 
     if tracer is not None:
         console.print(f"  Traces logged to MLflow experiment: {config.benchmark.trace_experiment_name}")
@@ -525,4 +534,6 @@ async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
     print_qualitative_examples_hard(results, "custom_rag", "custom_rag_v2")
     console.rule("[bold]custom_rag_v2 vs custom_rag_v2_checked (execution-trace checker)[/bold]")
     print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_checked")
+    console.rule("[bold]custom_rag_v2 vs custom_rag_v2_rewritten (query rewriting)[/bold]")
+    print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_rewritten")
     return results

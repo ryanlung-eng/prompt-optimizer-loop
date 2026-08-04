@@ -20,6 +20,7 @@ import httpx
 from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponential
 
 from . import execution_checker as _execution_checker_module
+from . import query_rewriter as _query_rewriter_module
 from . import rag_retriever as _rag_retriever_module
 from . import validator as _validator_module
 from .config import DatabricksConfig
@@ -27,14 +28,14 @@ from .synthetic_data import SyntheticInput
 from .validator import validate_workflow_json
 
 # Hashes THIS file's own source, validator.py's, check_params.js's,
-# rag_retriever.py's, AND execution_checker.py's — all directly determine
-# how a conversation plays out (self-repair trigger logic, what counts as
-# "valid", and — for the custom-RAG arm — what retrieve_context() actually
-# fetches: top_k, max_context_chars, query_type all live in rag_retriever.py,
-# not just the live index content). Baked into the cache key below so any
-# change here automatically invalidates stale cached conversations, instead
-# of relying on remembering to bump a version number or clear the cache by
-# hand.
+# rag_retriever.py's, execution_checker.py's, AND query_rewriter.py's — all
+# directly determine how a conversation plays out (self-repair trigger
+# logic, what counts as "valid", and — for the custom-RAG arm — what
+# retrieve_context() actually fetches: top_k, max_context_chars, query_type
+# all live in rag_retriever.py, not just the live index content). Baked into
+# the cache key below so any change here automatically invalidates stale
+# cached conversations, instead of relying on remembering to bump a version
+# number or clear the cache by hand.
 # check_params.js is invoked via subprocess rather than imported, so it's
 # easy to forget — exactly what happened here: three straight hallucination-
 # detection bug fixes to it never invalidated the cache at all, because only
@@ -49,6 +50,7 @@ _LOGIC_VERSION = hashlib.sha256(
         + _validator_module._SCHEMA_CHECK_SCRIPT.read_text()
         + Path(_rag_retriever_module.__file__).read_text()
         + Path(_execution_checker_module.__file__).read_text()
+        + Path(_query_rewriter_module.__file__).read_text()
     ).encode()
 ).hexdigest()[:16]
 
@@ -444,16 +446,37 @@ class WorkflowEvaluator:
                 exec_issues = await execution_checker(response)
                 if not exec_issues:
                     return response, transcript
+                issues_text = "; ".join(exec_issues)
+                # Confirmed via a live benchmark run: this repair turn
+                # previously had NO retrieval grounding (unlike the
+                # structural-error path below) and no scoping constraint —
+                # the model, told only "you need a real Merge node here"
+                # with nothing else to go on, invented a plausible-looking
+                # but nonexistent parameter (combinationMode) rather than
+                # using the real ones, and the open-ended "fix this" framing
+                # invited a broader rewrite than the one flagged issue
+                # warranted. Both fixed below: retrieve_on_repair gives it
+                # real docs for the SPECIFIC finding, and the reply now
+                # explicitly scopes the fix to a patch, not a rewrite.
                 reply = (
                     f"That parses and passes structural checks, but tracing "
                     f"through its actual execution surfaced real problems: "
-                    f"{'; '.join(exec_issues)}. Output ONLY the corrected "
-                    f"workflow JSON — start your reply immediately with '{{' "
-                    f"and end with '}}'. Do not diagnose the problem, explain "
-                    f"your reasoning, or write any prose before or after the "
-                    f"JSON; every token spent explaining is a token not spent "
-                    f"on the workflow itself."
+                    f"{issues_text}. Fix ONLY the specific node(s) and "
+                    f"issue(s) named above — do not restructure, rename, or "
+                    f"rewrite any other part of the workflow. Output ONLY "
+                    f"the corrected workflow JSON — start your reply "
+                    f"immediately with '{{' and end with '}}'. Do not "
+                    f"diagnose the problem, explain your reasoning, or write "
+                    f"any prose before or after the JSON; every token spent "
+                    f"explaining is a token not spent on the workflow itself."
                 )
+                if retrieve_on_repair is not None:
+                    extra = await retrieve_on_repair(issues_text)
+                    if extra:
+                        reply += (
+                            "\n\nAdditional reference documentation that may "
+                            f"help fix this specific problem:\n\n{extra}"
+                        )
             elif structural.is_json:
                 if last_turn:
                     return response, transcript
@@ -687,6 +710,7 @@ class WorkflowEvaluator:
         endpoint_url: Optional[str] = None,
         use_responses_api: bool = False,
         execution_check: bool = False,
+        query_rewrite: bool = False,
     ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
         """
         Identical to run_batch_custom_rag except the initial retrieval is run
@@ -701,15 +725,27 @@ class WorkflowEvaluator:
         execution_check=True wires in execution_checker.py's narrow
         pre-deployment execution-trace check (see that module's docstring) —
         a separately-benchmarkable toggle, not a silent change to this arm's
-        existing measured behavior. The cache key includes the flag itself
-        (not just this file's source): otherwise a checked and unchecked run
-        against the SAME input/prompt/endpoint would collide on the same
-        cache entry within one benchmark run and silently never exercise the
-        checked path at all.
+        existing measured behavior.
+
+        query_rewrite=True wires in query_rewriter.py: the RETRIEVAL query
+        (not the conversation the model sees) is rewritten into retrieval-
+        optimized phrasing before the initial retrieve_and_filter call — a
+        separate, independently-benchmarkable toggle from execution_check, so
+        the two variables aren't confounded with each other. Repair-turn
+        retrieval is NOT rewritten — it's already a targeted, narrow query
+        built from specific validator/checker findings, not raw user
+        phrasing, so the vocabulary-mismatch problem this addresses doesn't
+        apply there.
+
+        Both toggles are folded into the cache key (not just this file's
+        source): otherwise two runs of the SAME input/prompt/endpoint that
+        only differ by a toggle would collide on the same cache entry within
+        one benchmark run and silently never exercise the toggled path.
         """
         from dataclasses import replace as _dc_replace
 
         from .execution_checker import check_execution
+        from .query_rewriter import rewrite_query
         from .rag_pipeline_v2 import build_retrieved_block, retrieve_and_filter
         from .rag_retriever import retrieve_context
 
@@ -761,9 +797,15 @@ class WorkflowEvaluator:
                 # so ONE scenario's retrieval failure produces an [ERROR: ...]
                 # result for just that scenario instead of raising out of
                 # bounded_call and crashing the entire asyncio.gather() batch.
+                retrieval_query = inp.text
+                if query_rewrite:
+                    async with httpx.AsyncClient() as rewrite_client:
+                        retrieval_query = await rewrite_query(
+                            rewrite_client, filter_endpoint_url, filter_headers, inp.text,
+                        )
                 async with httpx.AsyncClient() as filter_client:
                     retrieved, kept = await retrieve_and_filter(
-                        filter_client, filter_endpoint_url, filter_headers, inp.text, rag_config,
+                        filter_client, filter_endpoint_url, filter_headers, retrieval_query, rag_config,
                     )
             except Exception as e:
                 cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
@@ -777,6 +819,8 @@ class WorkflowEvaluator:
             key = self._cache_key(system_prompt, inp, endpoint_url)
             if execution_check:
                 key += ":::execcheck"
+            if query_rewrite:
+                key += ":::rewrite"
             cached = self._cache.get(key)
             if cached is not None:
                 cache_hits += 1

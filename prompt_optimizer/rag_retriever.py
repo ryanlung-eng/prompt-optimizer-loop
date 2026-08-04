@@ -10,6 +10,8 @@ loop.py, same as any other pipeline component in this package.
 from dataclasses import dataclass, field
 from typing import List
 
+from tenacity import retry, stop_after_attempt, wait_random_exponential
+
 
 @dataclass
 class RAGConfig:
@@ -117,6 +119,20 @@ def _get_index(config: RAGConfig):
     return client.get_index(index_name=config.index_name)
 
 
+# similarity_search re-embeds query_text at REQUEST TIME via the Delta Sync
+# Index's embedding_source_column config, hitting the databricks-gte-large-en
+# Model Serving endpoint on every single call — not just at index-build time.
+# A benchmark run issues this concurrently across every scenario AND every
+# repair turn (more arms/turns = more concurrent load on the SAME shared
+# endpoint), which surfaces exactly the transient failure Model Serving's
+# own docs describe under load: "INTERNAL_ERROR: Could not route request" —
+# the router couldn't find a healthy backend for this one request, not a
+# malformed call (that would be a 4xx-style INVALID_PARAMETER_VALUE instead).
+# Retried with the same jittered backoff as evaluator.py's LLM calls, since
+# this was previously completely unretried and a single transient hiccup
+# anywhere in a whole batch crashed the entire asyncio.gather() call instead
+# of just that one item.
+@retry(stop=stop_after_attempt(6), wait=wait_random_exponential(multiplier=1, min=4, max=60))
 def retrieve_chunks(query_text: str, config: RAGConfig = RAGConfig()) -> List[RetrievedChunk]:
     """
     Top-K retrieval, ranked best-first by similarity_search, with a per-source

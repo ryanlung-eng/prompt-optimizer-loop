@@ -623,9 +623,21 @@ class WorkflowEvaluator:
 
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
             nonlocal cache_hits
-            # retrieve_context() makes a blocking Databricks SDK call — run it
-            # off the event loop so it doesn't stall the other concurrent slots.
-            retrieved = await asyncio.to_thread(retrieve_context, inp.text, rag_config)
+            try:
+                # retrieve_context() makes a blocking Databricks SDK call — run
+                # it off the event loop so it doesn't stall other concurrent
+                # slots. retrieve_chunks() itself retries transient Model
+                # Serving routing failures (the embedding endpoint is re-hit on
+                # every single call, not just at index-build time) — this
+                # try/except is the backstop for when retries are exhausted,
+                # so ONE scenario's retrieval failure produces an [ERROR: ...]
+                # result for just that scenario instead of raising out of
+                # bounded_call and crashing the entire asyncio.gather() batch.
+                retrieved = await asyncio.to_thread(retrieve_context, inp.text, rag_config)
+            except Exception as e:
+                cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
+                print(f"  Warning: retrieval failed for '{inp.text[:60]}…': {cause}")
+                return inp, f"[ERROR: retrieval failed: {cause}]", []
             retrieved_block = (
                 f"Retrieved reference documentation (top-{rag_config.top_k} most "
                 f"relevant sections for this request — use this as the authoritative "
@@ -742,10 +754,21 @@ class WorkflowEvaluator:
 
         async def bounded_call(inp: SyntheticInput) -> Tuple[SyntheticInput, str, List[dict]]:
             nonlocal cache_hits, total_retrieved, total_kept
-            async with httpx.AsyncClient() as filter_client:
-                retrieved, kept = await retrieve_and_filter(
-                    filter_client, filter_endpoint_url, filter_headers, inp.text, rag_config,
-                )
+            try:
+                # retrieve_chunks() (called inside retrieve_and_filter) retries
+                # transient Model Serving routing failures itself — this
+                # try/except is the backstop for when retries are exhausted,
+                # so ONE scenario's retrieval failure produces an [ERROR: ...]
+                # result for just that scenario instead of raising out of
+                # bounded_call and crashing the entire asyncio.gather() batch.
+                async with httpx.AsyncClient() as filter_client:
+                    retrieved, kept = await retrieve_and_filter(
+                        filter_client, filter_endpoint_url, filter_headers, inp.text, rag_config,
+                    )
+            except Exception as e:
+                cause = e.last_attempt.exception() if isinstance(e, RetryError) else e
+                print(f"  Warning: retrieval failed for '{inp.text[:60]}…': {cause}")
+                return inp, f"[ERROR: retrieval failed: {cause}]", []
             total_retrieved += len(retrieved)
             total_kept += len(kept)
             retrieved_block = build_retrieved_block(kept, len(retrieved), rag_config)

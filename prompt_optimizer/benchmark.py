@@ -38,6 +38,7 @@ from rich.table import Table
 from .config import Config
 from .evaluator import WorkflowEvaluator
 from .judge import DatabricksJudge, EvalResult
+from .state_simulation import STATE_SIMULATION_INSTRUCTION
 from .synthetic_data import SyntheticInput
 
 console = Console()
@@ -249,10 +250,11 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 # what the user asked for, which the old reviewer wasn't looking for. It also
 # costs an extra vector search + Haiku call per scenario. The query_rewrite=True
 # toggle remains in evaluator.py if it's ever worth revisiting.
-_HARD_ARMS = ["custom_rag", "custom_rag_v2"]
+_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_statesim"]
 _HARD_ARM_LABELS = {
     "custom_rag": "Custom RAG (same prompt + retrieved big-corpus context)",
     "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
+    "custom_rag_v2_statesim": "Custom RAG v2 + state-transition self-simulation",
 }
 
 # Every string in StructuralResult.warnings comes from exactly one of these
@@ -335,6 +337,15 @@ async def run_hard_benchmark(
     pairs_v2 = await evaluator.run_batch_custom_rag_v2(base_instructions, inputs, rag_config)
     results["custom_rag_v2"] = await judge.evaluate_batch(pairs_v2)
     _trace("custom_rag_v2", results["custom_rag_v2"])
+
+    console.print(f"  Running arm: custom_rag_v2_statesim (+ state-transition "
+                  f"self-simulation) on {len(inputs)} hard scenarios…")
+    pairs_statesim = await evaluator.run_batch_custom_rag_v2(
+        base_instructions, inputs, rag_config,
+        extra_instructions=STATE_SIMULATION_INSTRUCTION,
+    )
+    results["custom_rag_v2_statesim"] = await judge.evaluate_batch(pairs_statesim)
+    _trace("custom_rag_v2_statesim", results["custom_rag_v2_statesim"])
 
     if tracer is not None:
         console.print(f"  Traces logged to MLflow experiment: {config.benchmark.trace_experiment_name}")
@@ -532,4 +543,6 @@ async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
     print_hard_benchmark_report(results, dim_names)
     console.rule("[bold]custom_rag vs custom_rag_v2 (relevance filter + grounding)[/bold]")
     print_qualitative_examples_hard(results, "custom_rag", "custom_rag_v2")
+    console.rule("[bold]custom_rag_v2 vs custom_rag_v2_statesim (state simulation)[/bold]")
+    print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_statesim")
     return results

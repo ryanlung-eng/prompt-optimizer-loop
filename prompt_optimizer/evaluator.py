@@ -22,6 +22,7 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponent
 
 from . import execution_checker as _execution_checker_module
 from . import query_rewriter as _query_rewriter_module
+from . import state_simulation as _state_simulation_module
 from . import rag_retriever as _rag_retriever_module
 from . import validator as _validator_module
 from .config import DatabricksConfig
@@ -52,6 +53,7 @@ _LOGIC_VERSION = hashlib.sha256(
         + Path(_rag_retriever_module.__file__).read_text()
         + Path(_execution_checker_module.__file__).read_text()
         + Path(_query_rewriter_module.__file__).read_text()
+        + Path(_state_simulation_module.__file__).read_text()
     ).encode()
 ).hexdigest()[:16]
 
@@ -891,6 +893,7 @@ class WorkflowEvaluator:
         use_responses_api: bool = False,
         execution_check: bool = False,
         query_rewrite: bool = False,
+        extra_instructions: str = "",
     ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
         """
         Identical to run_batch_custom_rag except the initial retrieval is run
@@ -1026,7 +1029,13 @@ class WorkflowEvaluator:
             total_retrieved += len(retrieved)
             total_kept += len(kept)
             retrieved_block = build_retrieved_block(kept, len(retrieved), rag_config)
-            system_prompt = _assemble_custom_rag_prompt(base_instructions, retrieved_block)
+            # extra_instructions is appended to the BASE prompt, before the
+            # retrieved-context block is spliced in, so an arm testing a
+            # prompt addition differs from plain v2 by exactly that text.
+            instructions = base_instructions
+            if extra_instructions:
+                instructions = f"{base_instructions}\n\n{extra_instructions}"
+            system_prompt = _assemble_custom_rag_prompt(instructions, retrieved_block)
 
             # Prepended to the transcript (and therefore cached and logged to
             # MLflow with everything else) so retrieval decisions are
@@ -1055,6 +1064,12 @@ class WorkflowEvaluator:
                 key += ":::execcheck"
             if query_rewrite:
                 key += ":::rewrite"
+            if extra_instructions:
+                # Distinct cache entry per prompt variant, otherwise an arm
+                # differing only by appended instructions silently replays
+                # plain v2's cached conversation and never runs at all.
+                key += ":::instr" + hashlib.sha256(
+                    extra_instructions.encode()).hexdigest()[:8]
             cached = self._cache.get(key)
             if cached is not None:
                 cache_hits += 1

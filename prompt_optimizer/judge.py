@@ -222,6 +222,13 @@ assistant. Do NOT count referencing any of these as fabrication:
       - Google Drive credential ID: P5tL9xM3vB7nJhKr
       - Google Slides credential ID: T8vN2xQ4mW6rL9pJ
       - Google Calendar credential ID: R4cH7wZ2nD9xL3vM
+      - Databricks chat model NODE TYPE: CUSTOM.lmChatDatabricks — this is a
+        real custom node installed on this n8n instance and is the CORRECT,
+        expected way to wire an LLM here. The "CUSTOM." prefix is this
+        instance's namespace, not a placeholder. Do NOT claim it "is not a
+        standard n8n LangChain node", "does not exist", "will fail to load",
+        or that it should be `@n8n/n8n-nodes-langchain.lmChatDatabricks` —
+        that is the non-existent one.
       - Approval sub-workflow ID: aytM7Ef6tOKiGRTQ (cachedResultName
         "slack-workflow-approval") — this is a fixed, shared, pre-existing
         sub-workflow, not something the assistant invented.
@@ -422,7 +429,17 @@ actual bug. The ONE exception: when the user EXPLICITLY asked for certain
 sends to go out automatically with no approval, honoring that is CORRECT (the
 user has acknowledged the tradeoff) — do not flag the missing gate on those
 specific sends, and DO flag a gate wrapped around an explicitly-declined send
-as an intent violation. The gate is a fixed four-node pattern
+as an intent violation. "EXPLICITLY" is strict: it means the user said
+approval is not wanted/needed for that send ("no approval step", "send
+automatically", "without approval"). URGENCY words are NOT an opt-out —
+"immediately", "right away", "as soon as", "instantly", and "automatically
+alert/notify me" describe how fast or how hands-off the AUTOMATION should be,
+not permission to skip the gate; a gated send is still correct there, so do
+NOT flag it. Nor is an ERROR/FAILURE alert exempt: a Slack or email alert
+about a parse failure, exception, or anything going wrong is still an
+outbound send and is gated by default like any other. Do NOT call a gate on
+such an alert "misuse of the approval pattern", "this is a notification not
+an approval", or otherwise argue the gate does not belong there. The gate is a fixed four-node pattern
 ("Get DM Channel ID" -> "Call Approval Workflow" -> "IF Approved" -> "No
 Operation") that calls a pre-existing shared sub-workflow by a fixed ID, so do
 not flag that sub-workflow as unverified/missing/hardcoded either, and do not
@@ -442,6 +459,13 @@ DO flag a gate added around one of those alone.
 VERIFIED NODE FACTS — these come from this platform's knowledge base, several
 confirmed against n8n's own source. Your priors about these nodes are WRONG;
 these override them. Flagging any of the following as a bug is a false positive:
+  • `CUSTOM.lmChatDatabricks` is a REAL custom node installed on this n8n
+    instance, and is the correct, expected way to wire an LLM here. The
+    "CUSTOM." prefix is this instance's namespace for its own nodes, not a
+    placeholder. Do NOT claim it "is not a standard n8n LangChain node",
+    "does not exist", "will fail to load at runtime", or that it should be
+    `@n8n/n8n-nodes-langchain.lmChatDatabricks` — THAT one is the node type
+    that doesn't exist. Same for the `databricks` credential type it uses.
   • Slack Trigger's `options.userIds` is an EXCLUSION list, not an inclusion/
     allowlist. Users listed there are DROPPED before the workflow runs
     (verified in the trigger handler: it returns early when

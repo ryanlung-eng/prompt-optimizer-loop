@@ -356,8 +356,10 @@ async def run_hard_benchmark(
     # as [ERROR: ...] results for THIS arm only rather than killing the run.
     strong_endpoint = config.benchmark.strong_model_endpoint
     if strong_endpoint:
-        console.print(f"  Running arm: custom_rag_v2_strong ({strong_endpoint}) "
-                      f"on {len(inputs)} hard scenarios…")
+        _delay = config.benchmark.strong_model_request_delay
+        console.print(f"  Running arm: custom_rag_v2_strong ({strong_endpoint}) on "
+                      f"{len(inputs)} hard scenarios — serialized with a {_delay}s "
+                      f"pause per call for the TPM quota, so this arm is SLOW…")
         # Serialized (max_concurrent=1). The first attempt at this arm failed
         # ALL 17 scenarios with 429 REQUEST_LIMIT_EXCEEDED — a workspace
         # tokens-per-minute quota on Opus 5, not a bad endpoint name. These
@@ -369,6 +371,7 @@ async def run_hard_benchmark(
             base_instructions, inputs,
             _dc_replace(rag_config, generation_endpoint=strong_endpoint),
             max_concurrent=1,
+            request_delay=config.benchmark.strong_model_request_delay,
         )
         results["custom_rag_v2_strong"] = await judge.evaluate_batch(pairs_strong)
         _trace("custom_rag_v2_strong", results["custom_rag_v2_strong"])

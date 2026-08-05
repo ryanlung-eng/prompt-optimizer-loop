@@ -207,6 +207,8 @@ benchmark:
                                           # "knowledge_injected" arm's prompt
   trace_experiment_name: "/Users/ryan.lung@ibotta.com/n8n-hard-benchmark-traces"
   strong_model_endpoint: "databricks-claude-opus-5"
+  # Pacing for that endpoint's tokens-per-minute quota — raise if 429s persist.
+  strong_model_request_delay: 20.0
                                           # separate MLflow experiment for run_hard_benchmark's
                                           # per-scenario traces (rename freely) — set to null/omit
                                           # to disable tracing entirely

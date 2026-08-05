@@ -448,6 +448,7 @@ class WorkflowEvaluator:
         endpoint_url: Optional[str] = None, use_responses_api: bool = True,
         retrieve_on_repair: Optional[Callable[[str], Awaitable[str]]] = None,
         execution_checker: Optional[Callable[[str, str], Awaitable[List[str]]]] = None,
+        request_delay: float = 0.0,
     ) -> Tuple[str, List[dict]]:
         """
         Runs the KA up to _MAX_TURNS times, answering clarifying questions with
@@ -522,6 +523,13 @@ class WorkflowEvaluator:
         exec_checked = False
 
         for turn in range(_MAX_TURNS):
+            # Pacing for endpoints with a tokens-per-minute quota. Concurrency
+            # alone is not enough: one conversation is up to _MAX_TURNS calls
+            # of ~7k input tokens each, so even serialized it can outrun an
+            # input-TPM cap. Sleeping BEFORE each call (including the first)
+            # spreads a whole batch out evenly rather than bursting.
+            if request_delay:
+                await asyncio.sleep(request_delay)
             resolved = _resolve_prompt(system_prompt, conversation, inp)
             # max_tokens=None: no output cap on workflow generation. Every
             # fixed cap tried so far eventually truncated a legitimate
@@ -910,6 +918,7 @@ class WorkflowEvaluator:
         query_rewrite: bool = False,
         extra_instructions: str = "",
         max_concurrent: Optional[int] = None,
+        request_delay: float = 0.0,
     ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
         """
         Identical to run_batch_custom_rag except the initial retrieval is run
@@ -1101,6 +1110,7 @@ class WorkflowEvaluator:
                             endpoint_url=endpoint_url, use_responses_api=use_responses_api,
                             retrieve_on_repair=_retrieve_on_repair,
                             execution_checker=execution_checker,
+                            request_delay=request_delay,
                         )
                     except Exception as e:
                         cause = e.last_attempt.exception() if isinstance(e, RetryError) else e

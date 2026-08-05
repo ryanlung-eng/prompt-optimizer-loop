@@ -90,6 +90,12 @@ class BenchmarkConfig:
     # capability rather than confounding it with pipeline differences.
     # None skips that arm entirely.
     strong_model_endpoint: Optional[str] = None
+    # Seconds to wait before EVERY generation call in the strong-model arm.
+    # That endpoint hit a workspace input-tokens-per-minute quota and failed
+    # all 17 scenarios; serializing alone was not enough, since one
+    # conversation is several large calls back to back. Raise this if 429s
+    # persist, lower it once the quota is raised.
+    strong_model_request_delay: float = 20.0
 
 
 @dataclass
@@ -169,6 +175,7 @@ def load_config(path: str = "config.yaml") -> Config:
         kb_path=bm.get("kb_path", "knowledge-base-upload"),
         trace_experiment_name=bm.get("trace_experiment_name"),
         strong_model_endpoint=bm.get("strong_model_endpoint"),
+        strong_model_request_delay=bm.get("strong_model_request_delay", 20.0),
     )
 
     rag_raw = raw.get("rag", {})

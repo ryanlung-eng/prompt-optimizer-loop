@@ -471,9 +471,41 @@ these override them. Flagging any of the following as a bug is a false positive:
         `payload`). `labels` is an array of {id, name} objects. Flag
         lowercase `$json.subject`, `$json.date`, `$json.text` off a Gmail
         node as real bugs; do NOT flag `$json.Subject`.
-      - Google Drive `fileFolder search` emits ONLY `id` and `name` — no
-        mimeType, webViewLink, parents, or timestamps. Referencing those
-        off a Drive search result is a real bug.
+      - Google Drive `fileFolder search` emits ONLY `id` and `name` by
+        default — no mimeType, webViewLink, parents, or timestamps.
+        Referencing those off a default Drive search is a real bug; setting
+        the node's `options.fields` to include them is the correct fix and
+        must NOT be flagged.
+      - Google Sheets `read` with a filter that matches NOTHING emits ZERO
+        items, and every downstream node is then SKIPPED ENTIRELY (verified:
+        the node wired after it did not execute at all). So a "look it up,
+        and if absent create it" workflow silently does nothing on the
+        not-found path — no IF evaluation, no error. This IS a real blocker
+        whenever a not-found branch depends on a filtered read, and the
+        fixes are `alwaysOutputData: true` on the Sheets node or doing the
+        matching in a Code node. Do NOT accept an IF testing `row_number`
+        as the found/not-found test.
+      - Google Sheets `read` (rows found) emits `row_number` (a number, it
+        IS returned — claims that it isn't are false) plus one key per
+        column, named with the sheet's literal header text; unnamed columns
+        become col_2, col_3, ... A column headed "Ticket ID" is
+        $json['Ticket ID'].
+      - Google Sheets `sheetName` in id mode wants the bare gid ("0").
+        "gid=0" fails at runtime with 'Sheet with ID gid=0 not found' —
+        flag it.
+      - Google Docs `get` emits `documentId` and `content`, where content is
+        a PLAIN STRING the node already flattened. The raw API shape
+        (`body.content[].paragraph.elements[].textRun.content`) is NOT what
+        this node emits, so `$json.body.content.map(...)` resolves to
+        undefined — that is a real bug, and `$json.content` is correct.
+      - Slack `channel getAll` emits id, name, is_member, num_members and
+        many is_* booleans; `purpose` and `topic` are OBJECTS
+        ({value, creator, last_set}), so the text is $json.purpose.value.
+      - A node with `onError: "continueRegularOutput"` that FAILS emits one
+        item `{ error: "<message>" }` and downstream nodes still run with
+        it. Using that mode on a node whose failure should divert the flow
+        is a real defect (it carries an error object forward as if it were
+        data); `continueErrorOutput` is the correct choice there.
       - Jira `issue get` emits expand, id, self, key, fields — issue data
         nested under `fields` ($json.key at top level, $json.fields.summary
         below it). `fields.assignee` is null when unassigned, so an

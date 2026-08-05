@@ -358,9 +358,17 @@ async def run_hard_benchmark(
     if strong_endpoint:
         console.print(f"  Running arm: custom_rag_v2_strong ({strong_endpoint}) "
                       f"on {len(inputs)} hard scenarios…")
+        # Serialized (max_concurrent=1). The first attempt at this arm failed
+        # ALL 17 scenarios with 429 REQUEST_LIMIT_EXCEEDED — a workspace
+        # tokens-per-minute quota on Opus 5, not a bad endpoint name. These
+        # prompts carry ~25k chars of retrieved context each, so four
+        # concurrent multi-turn conversations blow an input-TPM cap
+        # instantly and then never recover. One at a time is slow but
+        # actually completes; raising the workspace quota is the real fix.
         pairs_strong = await evaluator.run_batch_custom_rag_v2(
             base_instructions, inputs,
             _dc_replace(rag_config, generation_endpoint=strong_endpoint),
+            max_concurrent=1,
         )
         results["custom_rag_v2_strong"] = await judge.evaluate_batch(pairs_strong)
         _trace("custom_rag_v2_strong", results["custom_rag_v2_strong"])

@@ -302,7 +302,12 @@ class WorkflowEvaluator:
     # Rate limiting (429) needs much more room than a transient network blip —
     # jittered backoff so concurrent slots don't all retry in lockstep and
     # re-trip the same limit together.
-    @retry(stop=stop_after_attempt(6), wait=wait_random_exponential(multiplier=1, min=4, max=60))
+    # A 429 here is usually a workspace tokens-per-minute quota, which is a
+    # SUSTAINED limit rather than a momentary blip — an entire benchmark arm
+    # against Opus 5 failed every scenario because 6 attempts topping out at
+    # 60s could not outlast it. More attempts and a longer ceiling let a run
+    # survive a tight quota (slowly) instead of returning all-errors.
+    @retry(stop=stop_after_attempt(10), wait=wait_random_exponential(multiplier=2, min=5, max=180))
     async def _call(
         self,
         client: httpx.AsyncClient,
@@ -368,6 +373,16 @@ class WorkflowEvaluator:
             timeout=timeout,
         )
         if resp.status_code >= 400:
+            # Sleep out an explicit Retry-After before letting tenacity's own
+            # backoff run — the endpoint knows better than our guess when it
+            # bothers to say so.
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                try:
+                    if retry_after and float(retry_after) > 0:
+                        await asyncio.sleep(min(float(retry_after), 180))
+                except (TypeError, ValueError):
+                    pass
             raise ValueError(
                 f"{resp.status_code} from {endpoint_url}: {resp.text[:1500]}"
             )
@@ -894,6 +909,7 @@ class WorkflowEvaluator:
         execution_check: bool = False,
         query_rewrite: bool = False,
         extra_instructions: str = "",
+        max_concurrent: Optional[int] = None,
     ) -> List[Tuple[SyntheticInput, str, List[dict]]]:
         """
         Identical to run_batch_custom_rag except the initial retrieval is run
@@ -943,7 +959,9 @@ class WorkflowEvaluator:
         filter_endpoint_url = self._generation_url
         filter_headers = self._headers
 
-        sem = asyncio.Semaphore(_MAX_CONCURRENT)
+        # max_concurrent lets a rate-limited generation endpoint run narrower
+        # than the default without slowing every other arm down.
+        sem = asyncio.Semaphore(max_concurrent or _MAX_CONCURRENT)
         cache_hits = 0
         total_retrieved = 0
         total_kept = 0

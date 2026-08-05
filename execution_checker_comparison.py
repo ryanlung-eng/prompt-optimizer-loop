@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Custom RAG Pipeline Variants — v1 vs. v2 vs. v2 + grounded query rewriting
+# MAGIC # Custom RAG Pipeline Variants — v2 vs. v2 + state-simulation vs. v2 on Opus 5
 # MAGIC
 # MAGIC Rebuilds the index (picks up any pending knowledge-base-upload/ doc
 # MAGIC changes sitting in the Volume) and runs three hard-scenario benchmark
@@ -8,21 +8,23 @@
 # MAGIC far the custom RAG pipeline has consistently and clearly exceeded it, so
 # MAGIC this isolates differences BETWEEN the custom pipeline variants instead:
 # MAGIC
-# MAGIC 1. **custom_rag** (v1) — same production prompt + plain top-K retrieval,
-# MAGIC    Sonnet generation.
 # MAGIC 2. **custom_rag_v2** — same as (1), plus a post-retrieval relevance
 # MAGIC    filter (Haiku) and an explicit grounding note, both modeled on
 # MAGIC    Ibotta's own internal HR Bot's validated production source.
-# MAGIC 3. **custom_rag_v2_rewritten** — same as (2), plus a cheap-model
-# MAGIC    GROUNDED query rewrite (see `query_rewriter.py`) before the initial
-# MAGIC    retrieval, targeting vocabulary mismatch between how users phrase
-# MAGIC    requests and how the KB is written. "Grounded" = a first-pass
-# MAGIC    retrieval on the user's own wording runs first, and its document
-# MAGIC    titles/sources are handed to the rewriter as candidates, so the
-# MAGIC    rewrite is steered by vocabulary the corpus demonstrably contains
-# MAGIC    (pseudo-relevance feedback). Only the retrieval query is rewritten —
-# MAGIC    the conversation the model actually sees still uses the user's own
-# MAGIC    original wording.
+# MAGIC 3. **custom_rag_v2_statesim** — same as (2), plus a state-transition
+# MAGIC    self-simulation block appended to the builder prompt (see
+# MAGIC    `state_simulation.py`). Four fixed questions applied to EVERY path:
+# MAGIC    re-entry (does this path change the state my own trigger selects
+# MAGIC    on?), obligation (did it discharge what the entry point promised,
+# MAGIC    including on deny/error paths?), unconditional work (is every
+# MAGIC    must-always-happen action on every path?), and reference resolution
+# MAGIC    on the path being walked. Targets the "consequence" blocker class —
+# MAGIC    emails never marked read, webhook hangs on deny, log skipped on deny.
+# MAGIC 4. **custom_rag_v2_strong** — the (2) pipeline and the (2) prompt, with
+# MAGIC    ONLY the generation model swapped to Opus 5. Answers how much of the
+# MAGIC    residual is a model ceiling rather than a scaffolding gap. Read
+# MAGIC    against (3) it also says whether consequence-reasoning is better
+# MAGIC    bought with a prompt mechanism or with raw capability.
 # MAGIC
 # MAGIC **Dropped arm — `custom_rag_v2_checked`** (in-loop execution-trace
 # MAGIC checker): retired after three runs. It consistently scored WORST overall
@@ -280,31 +282,31 @@ results = asyncio.get_event_loop().run_until_complete(benchmark.run_hard(cfg))
 
 # COMMAND ----------
 
-# MAGIC %md ### What the grounded rewriter actually searched for
-# MAGIC The rewritten arm logs its retrieval decisions into the transcript (and
-# MAGIC into MLflow as a root-span input): the first-pass probe titles it was
-# MAGIC shown, the query it produced, and which chunk sources survived filtering.
-# MAGIC This is the cell to read when the rewritten arm wins or loses a scenario —
-# MAGIC it answers "what did retrieval actually see" directly, instead of leaving
-# MAGIC it to be inferred from the final workflow.
+# MAGIC %md ### What retrieval actually saw, per scenario
+# MAGIC Every v2 arm logs its retrieval decisions into the transcript (and
+# MAGIC into MLflow as a root-span input): the retrieval query and which chunk
+# MAGIC sources survived filtering. Read this when an arm wins or loses a
+# MAGIC scenario — it answers "what did retrieval actually see" directly,
+# MAGIC instead of leaving it to be inferred from the final workflow.
 
 # COMMAND ----------
 
 import json as _json
 
-for r in results["custom_rag_v2_rewritten"]:
+for r in results["custom_rag_v2"]:
     meta = next((t for t in (r.transcript or []) if t.get("role") == "retrieval_meta"), None)
     if not meta:
         continue
     m = _json.loads(meta["content"])
     print("Scenario:", r.input.category)
     print("  original :", r.input.text[:150])
-    print("  rewritten:", m["retrieval_query"][:250])
+    print("  query    :", m["retrieval_query"][:250])
     print(f"  probe saw {len(m.get('probe_docs', []))} candidate docs; "
           f"kept {m['n_kept']}/{m['n_retrieved']} chunks from: {m['kept_sources']}")
     # Any vendor the platform has no credential for must NEVER appear in a
-    # rewritten query — a blind rewriter was caught injecting "OpenAI" into
-    # 4 of 17 queries, which is what the grounding probe exists to prevent.
+    # retrieval query. Kept as a standing check: an earlier query-rewriting
+    # arm was caught injecting "OpenAI" — a provider with no credential here —
+    # into 4 of 17 queries, which pulled the wrong docs entirely.
     _leaked = [v for v in ("OpenAI", "GPT", "Anthropic", "Postgres", "Notion", "Airtable")
                if v.lower() in m["retrieval_query"].lower()]
     if _leaked:
@@ -328,11 +330,11 @@ for r in results["custom_rag_v2"]:
 
 # COMMAND ----------
 
-# MAGIC %md ### Inspect every custom_rag (v1) failure/warning/soundness issue, for reference
+# MAGIC %md ### Inspect every custom_rag_v2_statesim failure/warning/soundness issue
 
 # COMMAND ----------
 
-for r in results["custom_rag"]:
+for r in results["custom_rag_v2_statesim"]:
     if not r.structural.valid or r.structural.warnings or r.soundness_issues:
         print("Scenario:", r.input.category)
         print("Structural errors:", r.structural.errors)
@@ -343,13 +345,14 @@ for r in results["custom_rag"]:
 
 # COMMAND ----------
 
-# MAGIC %md ### Inspect every custom_rag_v2_rewritten failure/warning/soundness issue
-# MAGIC The query-rewriting arm — compare against the custom_rag_v2 section above
-# MAGIC on the SAME scenarios to see what, if anything, the rewrite changed.
+# MAGIC %md ### Inspect every custom_rag_v2_strong (Opus 5) failure/warning/soundness issue
+# MAGIC Compare against the custom_rag_v2 section above on the SAME scenarios:
+# MAGIC anything still broken here is a strong candidate for a genuine model
+# MAGIC ceiling rather than something more scaffolding would fix.
 
 # COMMAND ----------
 
-for r in results["custom_rag_v2_rewritten"]:
+for r in results["custom_rag_v2_strong"]:
     if not r.structural.valid or r.structural.warnings or r.soundness_issues:
         print("Scenario:", r.input.category)
         print("Structural errors:", r.structural.errors)
@@ -394,7 +397,9 @@ def diff_against_v2(variant_arm: str):
     for s, before, after in unchanged:
         print(f"  {s}: {before} blockers (both arms)")
 
-diff_against_v2("custom_rag_v2_rewritten")
+diff_against_v2("custom_rag_v2_statesim")
+print("\n" + "=" * 80 + "\n")
+diff_against_v2("custom_rag_v2_strong")
 
 # COMMAND ----------
 
@@ -405,7 +410,7 @@ diff_against_v2("custom_rag_v2_rewritten")
 # COMMAND ----------
 
 _MARKERS = ("lmchatopenai", "nodes-langchain.openai", "nodes-base.openai", "gpt-4")
-for arm in ("custom_rag", "custom_rag_v2", "custom_rag_v2_rewritten"):
+for arm in ("custom_rag_v2", "custom_rag_v2_statesim", "custom_rag_v2_strong"):
     hits = [
         r.input.category for r in results[arm]
         if any(m in (r.actual_response or "").lower() for m in _MARKERS)

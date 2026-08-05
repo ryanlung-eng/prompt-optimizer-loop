@@ -250,9 +250,12 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 # what the user asked for, which the old reviewer wasn't looking for. It also
 # costs an extra vector search + Haiku call per scenario. The query_rewrite=True
 # toggle remains in evaluator.py if it's ever worth revisiting.
-_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_statesim", "custom_rag_v2_strong"]
+# custom_rag (v1: plain top-K retrieval, no relevance filter) was dropped as
+# a standing arm — it lost consistently across every run, and with the
+# interesting comparisons now all v2-relative it was only costing runtime.
+# evaluator.run_batch_custom_rag still exists if it's ever worth re-checking.
+_HARD_ARMS = ["custom_rag_v2", "custom_rag_v2_statesim", "custom_rag_v2_strong"]
 _HARD_ARM_LABELS = {
-    "custom_rag": "Custom RAG (same prompt + retrieved big-corpus context)",
     "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
     "custom_rag_v2_statesim": "Custom RAG v2 + state-transition self-simulation",
     "custom_rag_v2_strong": "Custom RAG v2 on a stronger generation model",
@@ -327,11 +330,6 @@ async def run_hard_benchmark(
             tracer.log_arm(arm, arm_results)
         except Exception as e:
             console.print(f"  [yellow]Warning: failed to log traces for arm '{arm}' ({e}).[/yellow]")
-
-    console.print(f"  Running arm: custom_rag on {len(inputs)} hard scenarios…")
-    pairs = await evaluator.run_batch_custom_rag(base_instructions, inputs, rag_config)
-    results["custom_rag"] = await judge.evaluate_batch(pairs)
-    _trace("custom_rag", results["custom_rag"])
 
     console.print(f"  Running arm: custom_rag_v2 (relevance filter + grounding) "
                   f"on {len(inputs)} hard scenarios…")
@@ -510,7 +508,8 @@ def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names:
 
 
 def print_qualitative_examples_hard(
-    results: Dict[str, List[EvalResult]], arm_a: str = "custom_rag", arm_b: str = "custom_rag_v2", n: int = 5,
+    results: Dict[str, List[EvalResult]], arm_a: str = "custom_rag_v2",
+    arm_b: str = "custom_rag_v2_statesim", n: int = 5,
 ) -> None:
     """
     With only 17 scenarios, every disagreement is worth seeing directly —
@@ -565,8 +564,6 @@ async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
 
     results = await run_hard_benchmark(config, evaluator, judge)
     print_hard_benchmark_report(results, dim_names)
-    console.rule("[bold]custom_rag vs custom_rag_v2 (relevance filter + grounding)[/bold]")
-    print_qualitative_examples_hard(results, "custom_rag", "custom_rag_v2")
     console.rule("[bold]custom_rag_v2 vs custom_rag_v2_statesim (state simulation)[/bold]")
     print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_statesim")
     if results.get("custom_rag_v2_strong"):

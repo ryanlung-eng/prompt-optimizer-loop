@@ -205,12 +205,23 @@ except Exception as e:
 
 import time
 
+# Do NOT accept any state merely starting with "ONLINE": the index reports
+# ONLINE_INITIAL_UPDATE while the first embedding sync is still running, and
+# exiting on that made the smoke test below fail with embeddings-not-ready
+# errors on every first run (observed live, twice). Fully synced means
+# detailed_state == ONLINE_NO_PENDING_UPDATE, plus the indexed row count
+# (when the API reports one) covering everything we just wrote.
 while True:
-    state = index.describe().get("status", {}).get("detailed_state", "")
-    if state.startswith("ONLINE"):
-        print("Index is ONLINE")
+    status = index.describe().get("status", {})
+    state = status.get("detailed_state", "")
+    ready = status.get("ready", False)
+    n_indexed = status.get("indexed_row_count")
+    count_ok = n_indexed is None or int(n_indexed) >= len(chunks)
+    if ready and state == "ONLINE_NO_PENDING_UPDATE" and count_ok:
+        print(f"Index is fully online: {state}, indexed_row_count={n_indexed}")
         break
-    print(f"Waiting for index to be ONLINE (currently: {state or 'unknown'})…")
+    print(f"Waiting for full sync (state={state or 'unknown'}, ready={ready}, "
+          f"indexed={n_indexed}/{len(chunks)})…")
     time.sleep(15)
 
 # COMMAND ----------
@@ -219,11 +230,27 @@ while True:
 
 # COMMAND ----------
 
-_smoke = index.similarity_search(
-    query_text="how do I avoid a Slack bot replying to its own messages",
-    columns=["id", "title", "text", "source"],
-    num_results=3,
-)
+# Retried, not one-shot: even after the index reports fully synced, the
+# query path can lag it by a little (observed live — the first query after
+# "online" failed while the identical query seconds later succeeded). This
+# doubles as the warm-up probe so the benchmark never eats that delay.
+_deadline = time.time() + 600
+_attempt = 0
+while True:
+    _attempt += 1
+    try:
+        _smoke = index.similarity_search(
+            query_text="how do I avoid a Slack bot replying to its own messages",
+            columns=["id", "title", "text", "source"],
+            num_results=3,
+        )
+        break
+    except Exception as e:
+        if time.time() > _deadline:
+            raise
+        print(f"Smoke test attempt {_attempt} failed ({str(e)[:140]}) — "
+              f"index still warming up, retrying in 20s…")
+        time.sleep(20)
 for r in _smoke["result"]["data_array"]:
     print(r[0], "-", r[1])
 

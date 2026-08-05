@@ -21,7 +21,12 @@ Same isolation discipline as query_rewriter.py and execution_checker.py.
 
 Known limitation, stated plainly: the platform requires the builder to emit
 raw workflow JSON and nothing else, so the simulation happens internally and
-we cannot verify from the output that it actually ran. A wrong or skipped
+we cannot verify from the output that it actually ran. The first run of this
+arm showed the other edge of that constraint — asked to answer four questions
+"explicitly", the model answered them IN THE REPLY ("I'll work through this
+carefully before generating the JSON. What changed in this turn: ..."), which
+is unparseable and burned all seven turns on one scenario. The instruction now
+ends by stating the simulation is silent; that failure is the reason. A wrong or skipped
 trace is invisible; only its downstream effect on blocker counts is
 measurable. If this arm wins, making the trace inspectable is the natural
 follow-up.
@@ -72,4 +77,10 @@ has one. For EACH path, answer these four questions explicitly:
 If any answer exposes a gap, fix the workflow before returning it. This is
 about the paths you did not have in mind while building — the happy path is
 the one you already got right.
+
+Do ALL of this silently, as internal reasoning. Your reply must still be the
+raw workflow JSON and nothing else — do not write out the paths you walked,
+do not list your answers to these four questions, do not narrate what you
+changed, and do not add any preamble before the opening brace. The
+simulation shapes the workflow you return; it never appears in the reply.
 """

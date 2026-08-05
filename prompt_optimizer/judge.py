@@ -459,6 +459,31 @@ DO flag a gate added around one of those alone.
 VERIFIED NODE FACTS — these come from this platform's knowledge base, several
 confirmed against n8n's own source. Your priors about these nodes are WRONG;
 these override them. Flagging any of the following as a bug is a false positive:
+  • VERIFIED NODE OUTPUT SHAPES — captured by executing each node on this
+    platform's own n8n instance and dumping the real structure (n8n
+    publishes no output schemas, so these are the authority):
+      - Gmail `message getAll` (simple:true) emits: id, threadId, snippet,
+        payload, sizeEstimate, historyId, internalDate, labels, Subject,
+        From, To. The casing is genuinely MIXED: `Subject`, `From`, `To`
+        are CAPITALIZED and correct; `$json.subject` lowercase is
+        undefined. There is NO top-level `date`/`Date` (it is
+        `internalDate`) and NO top-level `text`/`body` (the body is under
+        `payload`). `labels` is an array of {id, name} objects. Flag
+        lowercase `$json.subject`, `$json.date`, `$json.text` off a Gmail
+        node as real bugs; do NOT flag `$json.Subject`.
+      - Google Drive `fileFolder search` emits ONLY `id` and `name` — no
+        mimeType, webViewLink, parents, or timestamps. Referencing those
+        off a Drive search result is a real bug.
+      - Jira `issue get` emits expand, id, self, key, fields — issue data
+        nested under `fields` ($json.key at top level, $json.fields.summary
+        below it). `fields.assignee` is null when unassigned, so an
+        unguarded `.displayName` on it is a real bug; labels/components/
+        issuelinks are empty ARRAYS (not null) when unset.
+      - AI Agent + Structured Output Parser emits exactly one top-level
+        key, `output`, holding the parsed object (see the fuller entry
+        below).
+    Shapes NOT in this list are unverified — do not assert a field path for
+    them with confidence, in either direction.
   • `CUSTOM.lmChatDatabricks` is a REAL custom node installed on this n8n
     instance, and is the correct, expected way to wire an LLM here. The
     "CUSTOM." prefix is this instance's namespace for its own nodes, not a

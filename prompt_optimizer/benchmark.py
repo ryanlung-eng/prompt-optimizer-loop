@@ -250,11 +250,12 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 # what the user asked for, which the old reviewer wasn't looking for. It also
 # costs an extra vector search + Haiku call per scenario. The query_rewrite=True
 # toggle remains in evaluator.py if it's ever worth revisiting.
-_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_statesim"]
+_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_statesim", "custom_rag_v2_strong"]
 _HARD_ARM_LABELS = {
     "custom_rag": "Custom RAG (same prompt + retrieved big-corpus context)",
     "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
     "custom_rag_v2_statesim": "Custom RAG v2 + state-transition self-simulation",
+    "custom_rag_v2_strong": "Custom RAG v2 on a stronger generation model",
 }
 
 # Every string in StructuralResult.warnings comes from exactly one of these
@@ -346,6 +347,29 @@ async def run_hard_benchmark(
     )
     results["custom_rag_v2_statesim"] = await judge.evaluate_batch(pairs_statesim)
     _trace("custom_rag_v2_statesim", results["custom_rag_v2_statesim"])
+
+    # Same pipeline and same prompt as plain custom_rag_v2 — ONLY the
+    # generation model differs, so this arm answers "how much of what's left
+    # is a model ceiling rather than a scaffolding gap?" The relevance
+    # filter and judge stay on their usual endpoints deliberately; moving
+    # them too would confound the comparison. The endpoint already forms
+    # part of the conversation cache key, so no extra cache handling is
+    # needed. If the endpoint name is wrong, per-scenario failures surface
+    # as [ERROR: ...] results for THIS arm only rather than killing the run.
+    strong_endpoint = config.benchmark.strong_model_endpoint
+    if strong_endpoint:
+        console.print(f"  Running arm: custom_rag_v2_strong ({strong_endpoint}) "
+                      f"on {len(inputs)} hard scenarios…")
+        pairs_strong = await evaluator.run_batch_custom_rag_v2(
+            base_instructions, inputs,
+            _dc_replace(rag_config, generation_endpoint=strong_endpoint),
+        )
+        results["custom_rag_v2_strong"] = await judge.evaluate_batch(pairs_strong)
+        _trace("custom_rag_v2_strong", results["custom_rag_v2_strong"])
+    else:
+        console.print("  Skipping arm: custom_rag_v2_strong "
+                      "(benchmark.strong_model_endpoint not set)")
+        results["custom_rag_v2_strong"] = []
 
     if tracer is not None:
         console.print(f"  Traces logged to MLflow experiment: {config.benchmark.trace_experiment_name}")
@@ -545,4 +569,7 @@ async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
     print_qualitative_examples_hard(results, "custom_rag", "custom_rag_v2")
     console.rule("[bold]custom_rag_v2 vs custom_rag_v2_statesim (state simulation)[/bold]")
     print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_statesim")
+    if results.get("custom_rag_v2_strong"):
+        console.rule("[bold]custom_rag_v2 vs custom_rag_v2_strong (stronger model)[/bold]")
+        print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_strong")
     return results

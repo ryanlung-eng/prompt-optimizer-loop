@@ -84,6 +84,12 @@ class BenchmarkConfig:
     # together would make both harder to browse. None disables tracing
     # entirely (run_hard_benchmark then behaves exactly as before).
     trace_experiment_name: Optional[str] = None
+    # Generation endpoint for the "stronger model" hard-benchmark arm. Only
+    # the GENERATION model changes — retrieval, the relevance filter and the
+    # judge all stay on their usual endpoints, so the arm isolates model
+    # capability rather than confounding it with pipeline differences.
+    # None skips that arm entirely.
+    strong_model_endpoint: Optional[str] = None
 
 
 @dataclass
@@ -162,6 +168,7 @@ def load_config(path: str = "config.yaml") -> Config:
         node_name=bm.get("node_name", "Workflow Builder"),
         kb_path=bm.get("kb_path", "knowledge-base-upload"),
         trace_experiment_name=bm.get("trace_experiment_name"),
+        strong_model_endpoint=bm.get("strong_model_endpoint"),
     )
 
     rag_raw = raw.get("rag", {})

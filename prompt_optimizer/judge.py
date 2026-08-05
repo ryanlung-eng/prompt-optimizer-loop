@@ -459,10 +459,20 @@ these override them. Flagging any of the following as a bug is a false positive:
     the done output emits ALL items that were fed back across EVERY
     iteration (all 5, in order, carrying the per-iteration fields added
     inside the loop), not just the last batch. Aggregating from the done
-    output after a loop is the CORRECT, sufficient pattern — do NOT claim
-    "the done output only carries the last batch", "results are never
-    accumulated across iterations", or that static-data/sheet persistence
-    is required to collect loop results. Also verified: the node iterates
+    output after a loop is the CORRECT, sufficient pattern. The precise
+    verified mechanism, because this fact keeps getting restated wrongly in
+    new words: what arrives at the done output is exactly the stream of
+    items that the loop body fed BACK into the loop node — carrying every
+    field the loop body added — NOT the node's original unprocessed input.
+    So in a "Loop -> AI Agent/Code -> back into Loop" shape, the done branch
+    receives the PROCESSED items (the classifications, the transformed
+    rows), and reading $input.all() there is correct. Do NOT claim any of:
+    "the done output only carries the last batch"; "the items arriving at
+    done are the original/raw rows, not the processed results"; "the
+    processed items are consumed internally by the batch node and never
+    reach the done branch"; "results are never accumulated across
+    iterations"; or that static-data/sheet persistence is required to
+    collect loop results. Every one of those is contradicted by the live run. Also verified: the node iterates
     its own internal queue of the ORIGINAL input — feeding processed
     (transformed) items into the loop-back input does NOT corrupt or
     replace the remaining batches.
@@ -494,6 +504,17 @@ these override them. Flagging any of the following as a bug is a false positive:
     `$input.all()` reading `item.json.name`/`item.json.id` is CORRECT; do
     NOT claim the response is "a single item wrapping a transitions
     array" or that `$json.transitions` is the real path — it is not.
+  • A workflow that FAILS FAST on an unconfigured value it cannot know —
+    e.g. a Code node that throws "configure the bot account ID before
+    activating" when a placeholder is still unreplaced — is CORRECT
+    behavior, not a blocker. The builder has no way to know the real bot/
+    service-account ID, so its only options are a placeholder (which
+    silently disables the anti-recursion guard and lets the workflow loop
+    on its own events) or a loud failure. Loud is strictly safer. Do NOT
+    flag this as "the workflow will never run until the user edits it" —
+    that is the intended effect. The genuine defect is the opposite shape:
+    a guard that COMPARES against an unreplaced placeholder and therefore
+    never matches, silently running with its protection off.
   • The Jira node has NO "transition" operation — this does not exist on any
     version, confirmed directly against the installed node's declared
     operations. `resource: issue, operation: transitions` (plural) is

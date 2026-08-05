@@ -780,8 +780,10 @@ def _check_placeholder_identity_guard(nodes: List[dict]) -> List[str]:
                         f"but its own value is the unfilled placeholder '{value}' — since this "
                         f"can never equal any real ID, the guard can never match, silently "
                         f"disabling the loop protection rather than merely needing "
-                        f"configuration. Ask the user for the real bot/service-account ID "
-                        f"rather than embedding a placeholder here."
+                        f"configuration. Make the guard fail LOUDLY instead — e.g. throw a "
+                        f"clear \"configure the real bot/service-account ID before "
+                        f"activating\" error while the value is still unset — so the "
+                        f"workflow cannot run with its loop protection silently off."
                     )
 
         elif ntype in ("n8n-nodes-base.if", "n8n-nodes-base.filter"):
@@ -803,8 +805,10 @@ def _check_placeholder_identity_guard(nodes: List[dict]) -> List[str]:
                         f"placeholder '{right}' as what looks like a self-loop/anti-recursion "
                         f"identity guard — since this can never equal any real ID, the guard "
                         f"can never match, silently disabling the loop protection rather than "
-                        f"merely needing configuration. Ask the user for the real bot/"
-                        f"service-account ID rather than embedding a placeholder here."
+                        f"merely needing configuration. Make the guard fail LOUDLY instead "
+                        f"(e.g. an upstream check that throws a clear \"configure the real "
+                        f"bot/service-account ID\" error while the value is unset), so the "
+                        f"workflow cannot run with its loop protection silently off."
                     )
     return warnings
 

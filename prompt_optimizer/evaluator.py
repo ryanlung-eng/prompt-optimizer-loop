@@ -884,7 +884,7 @@ class WorkflowEvaluator:
         from .execution_checker import check_execution
         from .query_rewriter import rewrite_query
         from .rag_pipeline_v2 import build_retrieved_block, retrieve_and_filter
-        from .rag_retriever import retrieve_context
+        from .rag_retriever import retrieve_chunks, retrieve_context
 
         endpoint_url = endpoint_url or (
             f"{self._config.workspace_url}/serving-endpoints/"
@@ -903,6 +903,11 @@ class WorkflowEvaluator:
         total_kept = 0
 
         _repair_rag_config = _dc_replace(rag_config, top_k=3, max_context_chars=4000)
+        # Wider than the real retrieval: this probe's only output is a list of
+        # titles for the rewriter to read, so a broader view of the topic
+        # space costs nothing in context and gives it more vocabulary to
+        # steer toward.
+        _probe_rag_config = _dc_replace(rag_config, top_k=12)
 
         async def _retrieve_on_repair(error_text: str) -> str:
             # Belt-and-braces: an empty query makes Databricks AI Search raise
@@ -938,10 +943,34 @@ class WorkflowEvaluator:
                 # result for just that scenario instead of raising out of
                 # bounded_call and crashing the entire asyncio.gather() batch.
                 retrieval_query = inp.text
+                probe_docs: List[str] = []
                 if query_rewrite:
+                    # First-pass probe on the RAW user wording, used ONLY to
+                    # show the rewriter what vocabulary this KB actually
+                    # contains for the topic (pseudo-relevance feedback).
+                    # Titles/sources only — no LLM call, no context budget
+                    # spent — so the cost is one extra vector search. Added
+                    # after the blind rewriter was caught inventing a
+                    # provider the KB has no docs for; it cannot invent
+                    # vocabulary it can see the corpus doesn't use.
+                    # Fails open on its own: the probe is strictly an
+                    # enhancement to the rewrite, so if it errors we degrade
+                    # to blind rewriting rather than failing the scenario the
+                    # way a real retrieval failure must.
+                    try:
+                        probe = await asyncio.to_thread(
+                            retrieve_chunks, inp.text, _probe_rag_config,
+                        )
+                        probe_docs = [f"{c.title} ({c.source})" for c in probe]
+                    except Exception as probe_err:
+                        cause = (probe_err.last_attempt.exception()
+                                 if isinstance(probe_err, RetryError) else probe_err)
+                        print(f"  Warning: rewrite grounding probe failed for "
+                              f"'{inp.text[:60]}…' ({cause}) — rewriting blind.")
                     async with httpx.AsyncClient() as rewrite_client:
                         retrieval_query = await rewrite_query(
-                            rewrite_client, filter_endpoint_url, filter_headers, inp.text,
+                            rewrite_client, filter_endpoint_url, filter_headers,
+                            inp.text, probe_docs,
                         )
                 async with httpx.AsyncClient() as filter_client:
                     retrieved, kept = await retrieve_and_filter(
@@ -971,6 +1000,7 @@ class WorkflowEvaluator:
                 "content": json.dumps({
                     "retrieval_query": retrieval_query,
                     "query_was_rewritten": retrieval_query != inp.text,
+                    "probe_docs": probe_docs,
                     "kept_sources": sorted({c.source for c in kept}),
                     "n_retrieved": len(retrieved),
                     "n_kept": len(kept),

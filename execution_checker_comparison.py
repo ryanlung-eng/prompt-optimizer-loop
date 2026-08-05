@@ -1,9 +1,9 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Custom RAG Pipeline Variants — v1 vs. v2 vs. v2+checker vs. v2+query-rewrite
+# MAGIC # Custom RAG Pipeline Variants — v1 vs. v2 vs. v2 + grounded query rewriting
 # MAGIC
 # MAGIC Rebuilds the index (picks up any pending knowledge-base-upload/ doc
-# MAGIC changes sitting in the Volume) and runs all four hard-scenario benchmark
+# MAGIC changes sitting in the Volume) and runs three hard-scenario benchmark
 # MAGIC arms. Production is deliberately NOT one of them — across every run so
 # MAGIC far the custom RAG pipeline has consistently and clearly exceeded it, so
 # MAGIC this isolates differences BETWEEN the custom pipeline variants instead:
@@ -13,33 +13,31 @@
 # MAGIC 2. **custom_rag_v2** — same as (1), plus a post-retrieval relevance
 # MAGIC    filter (Haiku) and an explicit grounding note, both modeled on
 # MAGIC    Ibotta's own internal HR Bot's validated production source.
-# MAGIC 3. **custom_rag_v2_checked** — same as (2), plus a narrow, cheap-model
-# MAGIC    (Haiku) execution-trace checker wired directly into the self-repair
-# MAGIC    loop itself (see `execution_checker.py`). Scoped to one question:
-# MAGIC    would this workflow's cross-node references, approval/self-loop
-# MAGIC    guards, and Merge/synchronization points actually behave correctly if
-# MAGIC    traced step by step? A first run of this arm showed it net-NEGATIVE
-# MAGIC    (more blockers than plain v2) — traced to the repair turn having no
-# MAGIC    retrieval grounding, so a flagged architectural issue (e.g. "needs a
-# MAGIC    real Merge node") got fixed by the model inventing a plausible-looking
-# MAGIC    but nonexistent parameter instead of using the real one. Now fixed:
-# MAGIC    the repair turn re-retrieves docs targeted at the specific finding
-# MAGIC    (same mechanism the structural-error repair path already used), and
-# MAGIC    the reply explicitly scopes the fix to a patch, not a rewrite.
-# MAGIC 4. **custom_rag_v2_rewritten** — same as (2), plus a cheap-model query
-# MAGIC    rewrite (see `query_rewriter.py`) that translates the raw user
-# MAGIC    request into retrieval-optimized phrasing before the initial
-# MAGIC    retrieval call, targeting vocabulary mismatch between how users phrase
-# MAGIC    requests and how the KB is written. Only the retrieval query is
-# MAGIC    rewritten — the conversation the model actually sees still uses the
-# MAGIC    user's own original wording.
+# MAGIC 3. **custom_rag_v2_rewritten** — same as (2), plus a cheap-model
+# MAGIC    GROUNDED query rewrite (see `query_rewriter.py`) before the initial
+# MAGIC    retrieval, targeting vocabulary mismatch between how users phrase
+# MAGIC    requests and how the KB is written. "Grounded" = a first-pass
+# MAGIC    retrieval on the user's own wording runs first, and its document
+# MAGIC    titles/sources are handed to the rewriter as candidates, so the
+# MAGIC    rewrite is steered by vocabulary the corpus demonstrably contains
+# MAGIC    (pseudo-relevance feedback). Only the retrieval query is rewritten —
+# MAGIC    the conversation the model actually sees still uses the user's own
+# MAGIC    original wording.
 # MAGIC
-# MAGIC **Cost/latency note:** arms 3 and 4 each add a Haiku call per turn beyond
-# MAGIC what plain v2 does (arm 3 on every structurally-valid turn, plus a full
-# MAGIC extra repair-turn call whenever it finds something; arm 4 once per
-# MAGIC scenario before the initial retrieval) — expect both to run slower and
-# MAGIC use more tokens than plain v2. That's the tradeoff being measured here:
-# MAGIC does either extra cost actually buy a measurable improvement.
+# MAGIC **Dropped arm — `custom_rag_v2_checked`** (in-loop execution-trace
+# MAGIC checker): retired after three runs. It consistently scored WORST overall
+# MAGIC despite having the fewest blockers — its repair turns traded completeness
+# MAGIC for blocker-avoidance (completeness 0.67 vs plain v2's 0.88 on the last
+# MAGIC run). Trace analysis showed every repair turn issuing at least one false
+# MAGIC demand: a nonexistent double-wrapped output path
+# MAGIC (`$json.output.output.field`), and re-routing the approval DM away from
+# MAGIC the workflow owner. The `execution_check=True` toggle still exists in
+# MAGIC `evaluator.py` if it's ever worth revisiting with a stronger checker model.
+# MAGIC
+# MAGIC **Cost/latency note:** arm 3 adds one Haiku call plus one extra vector
+# MAGIC search per scenario (the grounding probe) beyond what plain v2 does —
+# MAGIC both once per scenario, not per turn. That's the tradeoff being measured:
+# MAGIC does better-targeted retrieval buy a measurable improvement.
 # MAGIC
 # MAGIC A re-embed is included as standard practice (safe to re-run any time the
 # MAGIC docs/examples corpus changes) — same delete-and-recreate flow as
@@ -257,8 +255,8 @@ for r in _smoke["result"]["data_array"]:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Phase 2 — Benchmark: all four arms
-# MAGIC `benchmark.run_hard()` already runs all four arms and prints qualitative
+# MAGIC ## Phase 2 — Benchmark: all three arms
+# MAGIC `benchmark.run_hard()` already runs all three arms and prints qualitative
 # MAGIC win/loss comparisons for each pair — no separate wiring needed here.
 
 # COMMAND ----------
@@ -282,22 +280,36 @@ results = asyncio.get_event_loop().run_until_complete(benchmark.run_hard(cfg))
 
 # COMMAND ----------
 
-# MAGIC %md ### Inspect every custom_rag_v2_checked failure/warning/soundness issue
-# MAGIC This is the new arm — the one that actually reflects the execution-trace
-# MAGIC checker's changes. Worth comparing directly against the custom_rag_v2
-# MAGIC section below on the SAME scenarios to see what, if anything, the checker
-# MAGIC actually fixed.
+# MAGIC %md ### What the grounded rewriter actually searched for
+# MAGIC The rewritten arm logs its retrieval decisions into the transcript (and
+# MAGIC into MLflow as a root-span input): the first-pass probe titles it was
+# MAGIC shown, the query it produced, and which chunk sources survived filtering.
+# MAGIC This is the cell to read when the rewritten arm wins or loses a scenario —
+# MAGIC it answers "what did retrieval actually see" directly, instead of leaving
+# MAGIC it to be inferred from the final workflow.
 
 # COMMAND ----------
 
-for r in results["custom_rag_v2_checked"]:
-    if not r.structural.valid or r.structural.warnings or r.soundness_issues:
-        print("Scenario:", r.input.category)
-        print("Structural errors:", r.structural.errors)
-        print("Warnings (Layer 2):", r.structural.warnings)
-        print("Soundness issues (Layer 3):", r.soundness_issues)
-        print("Actual response:", r.actual_response[:2000])
-        print("---")
+import json as _json
+
+for r in results["custom_rag_v2_rewritten"]:
+    meta = next((t for t in (r.transcript or []) if t.get("role") == "retrieval_meta"), None)
+    if not meta:
+        continue
+    m = _json.loads(meta["content"])
+    print("Scenario:", r.input.category)
+    print("  original :", r.input.text[:150])
+    print("  rewritten:", m["retrieval_query"][:250])
+    print(f"  probe saw {len(m.get('probe_docs', []))} candidate docs; "
+          f"kept {m['n_kept']}/{m['n_retrieved']} chunks from: {m['kept_sources']}")
+    # Any vendor the platform has no credential for must NEVER appear in a
+    # rewritten query — a blind rewriter was caught injecting "OpenAI" into
+    # 4 of 17 queries, which is what the grounding probe exists to prevent.
+    _leaked = [v for v in ("OpenAI", "GPT", "Anthropic", "Postgres", "Notion", "Airtable")
+               if v.lower() in m["retrieval_query"].lower()]
+    if _leaked:
+        print(f"  *** VENDOR LEAK IN QUERY: {_leaked} ***")
+    print("---")
 
 # COMMAND ----------
 
@@ -382,8 +394,6 @@ def diff_against_v2(variant_arm: str):
     for s, before, after in unchanged:
         print(f"  {s}: {before} blockers (both arms)")
 
-diff_against_v2("custom_rag_v2_checked")
-print("\n" + "=" * 80 + "\n")
 diff_against_v2("custom_rag_v2_rewritten")
 
 # COMMAND ----------
@@ -395,7 +405,7 @@ diff_against_v2("custom_rag_v2_rewritten")
 # COMMAND ----------
 
 _MARKERS = ("lmchatopenai", "nodes-langchain.openai", "nodes-base.openai", "gpt-4")
-for arm in ("custom_rag", "custom_rag_v2", "custom_rag_v2_checked", "custom_rag_v2_rewritten"):
+for arm in ("custom_rag", "custom_rag_v2", "custom_rag_v2_rewritten"):
     hits = [
         r.input.category for r in results[arm]
         if any(m in (r.actual_response or "").lower() for m in _MARKERS)

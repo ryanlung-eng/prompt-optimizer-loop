@@ -232,12 +232,19 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 # itself — see execution_checker.py — not just a post-hoc measurement). #
 # --------------------------------------------------------------------- #
 
-_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_checked", "custom_rag_v2_rewritten"]
+# custom_rag_v2_checked (the in-loop execution-trace checker) was dropped
+# after three benchmark runs: it consistently scored WORST overall despite
+# having the fewest blockers, because its repair turns trade completeness for
+# blocker-avoidance, and trace analysis showed every one of its repair turns
+# issuing at least one false demand (a nonexistent double-wrapped output
+# path, re-routing the approval DM away from the workflow owner). The
+# execution_check=True toggle still exists in evaluator.py if it's ever worth
+# revisiting with a stronger checker model.
+_HARD_ARMS = ["custom_rag", "custom_rag_v2", "custom_rag_v2_rewritten"]
 _HARD_ARM_LABELS = {
     "custom_rag": "Custom RAG (same prompt + retrieved big-corpus context)",
     "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
-    "custom_rag_v2_checked": "Custom RAG v2 + execution-trace checker",
-    "custom_rag_v2_rewritten": "Custom RAG v2 + query rewriting",
+    "custom_rag_v2_rewritten": "Custom RAG v2 + grounded query rewriting",
 }
 
 # Every string in StructuralResult.warnings comes from exactly one of these
@@ -321,15 +328,7 @@ async def run_hard_benchmark(
     results["custom_rag_v2"] = await judge.evaluate_batch(pairs_v2)
     _trace("custom_rag_v2", results["custom_rag_v2"])
 
-    console.print(f"  Running arm: custom_rag_v2_checked (+ execution-trace checker) "
-                  f"on {len(inputs)} hard scenarios…")
-    pairs_v2_checked = await evaluator.run_batch_custom_rag_v2(
-        base_instructions, inputs, rag_config, execution_check=True,
-    )
-    results["custom_rag_v2_checked"] = await judge.evaluate_batch(pairs_v2_checked)
-    _trace("custom_rag_v2_checked", results["custom_rag_v2_checked"])
-
-    console.print(f"  Running arm: custom_rag_v2_rewritten (+ query rewriting) "
+    console.print(f"  Running arm: custom_rag_v2_rewritten (+ grounded query rewriting) "
                   f"on {len(inputs)} hard scenarios…")
     pairs_v2_rewritten = await evaluator.run_batch_custom_rag_v2(
         base_instructions, inputs, rag_config, query_rewrite=True,
@@ -484,8 +483,8 @@ def print_qualitative_examples_hard(
     build a monotonic "value of this project" story), this checks both
     directions between any two arms. Defaults to custom_rag vs custom_rag_v2;
     pass arm_a/arm_b to compare any other pair (e.g. custom_rag_v2 vs
-    custom_rag_v2_checked, to see concretely what the execution-trace
-    checker changed).
+    custom_rag_v2_rewritten, to see concretely what grounded query rewriting
+    changed).
     """
     a_results = {r.input.text: r for r in results[arm_a]}
     b_results = {r.input.text: r for r in results[arm_b]}
@@ -534,8 +533,6 @@ async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
     print_hard_benchmark_report(results, dim_names)
     console.rule("[bold]custom_rag vs custom_rag_v2 (relevance filter + grounding)[/bold]")
     print_qualitative_examples_hard(results, "custom_rag", "custom_rag_v2")
-    console.rule("[bold]custom_rag_v2 vs custom_rag_v2_checked (execution-trace checker)[/bold]")
-    print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_checked")
-    console.rule("[bold]custom_rag_v2 vs custom_rag_v2_rewritten (query rewriting)[/bold]")
+    console.rule("[bold]custom_rag_v2 vs custom_rag_v2_rewritten (grounded query rewriting)[/bold]")
     print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_rewritten")
     return results

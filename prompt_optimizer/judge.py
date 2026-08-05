@@ -274,13 +274,23 @@ intent_understanding  — 1.0: Correctly identified the trigger, output(s), and 
 clarity               — 1.0: Clear, step-by-step, plain language a non-tech user can follow.
                         0.5: Understandable but with jargon or missing steps. 0.0: Confusing.
 
-completeness          — 1.0: Every detail the user provided (account, channel, schedule, data mapping)
-                        is reflected in the proposed workflow AND correctly matches what was actually
-                        asked — including the right schedule/cron expression and timezone (watch for
-                        DST ambiguity, e.g. a fixed UTC offset used for a time the user gave in local
-                        time). Nothing left vague, nothing subtly wrong.
+completeness          — Score this by ENUMERATION, not impression. List every concrete thing the
+                        user asked for (each destination, field/mapping, schedule detail, conditional
+                        behavior, failure behavior), then for each one find the specific node that
+                        implements it. If you cannot point to that node, it is NOT implemented —
+                        count it against the score rather than assuming something covers it. Be
+                        deliberately strict here: a silently dropped requirement ships looking
+                        correct, so a missed one is far more costly than an unfair deduction.
+                        1.0: Every enumerated detail is implemented by an identifiable node AND
+                        matches what was actually asked — including the right schedule/cron
+                        expression and timezone (watch for DST ambiguity, e.g. a fixed UTC offset
+                        used for a time the user gave in local time). Nothing vague, nothing subtly
+                        wrong.
                         0.5: Some details addressed, or present but with a schedule/timezone mistake.
                         0.0: Ignored user specifics.
+                        In your reasoning for this dimension, name every requirement you found
+                        unimplemented (or state that all were implemented) — do not give a score
+                        below 1.0 without saying which requirement was missing.
 
 knowledge_honesty     — HARD RULE, checked FIRST, before anything else in this dimension: using ANY
                         credential/workflow ID that exactly matches one of the values listed under
@@ -555,15 +565,43 @@ these override them. Flagging any of the following as a bug is a false positive:
     `@n8n/n8n-nodes-langchain.toolHttpRequest`), Code (use `toolCode`),
     Merge, Set, IF/Switch. Only flag ai_tool wiring for those.
 
-If you are not certain a claim about node behavior is true, leave it out. A
-confident-sounding wrong finding is worse than a missed one — these reviews are
-used to decide what to change, so a false positive sends real work in the wrong
-direction.
+UNCERTAINTY — the right default DEPENDS on what kind of claim you are making,
+and the two are opposites:
+
+  (a) Claims about how an n8n NODE BEHAVES (what an output emits, whether a
+      node blocks/deadlocks, what shape its data has, whether a node can be
+      wired somewhere). Be CONSERVATIVE: if you are not certain, leave it
+      out, and never contradict the VERIFIED NODE FACTS above. A
+      confident-sounding wrong claim here is worse than a missed one — it
+      gets acted on and breaks workflows that were already correct. This
+      has happened repeatedly and is why that list exists.
+
+  (b) Claims that the workflow FAILS TO DO SOMETHING THE USER ASKED FOR (a
+      stated requirement with no node implementing it, a detail silently
+      dropped, a branch that never runs). Be AGGRESSIVE: if you cannot
+      point to the specific node that satisfies the requirement, RAISE IT.
+      Do not give the workflow the benefit of the doubt, do not assume an
+      unstated node handles it, and do not soften it to a nit because you
+      are unsure. A requirement that is silently unimplemented ships
+      looking fine and is the most expensive kind of miss — far worse than
+      a coverage question that turns out to be a false alarm.
+
+REQUIREMENT COVERAGE SWEEP — do this explicitly, before anything else. Read
+the user's request and enumerate every concrete thing it asks for: each
+trigger condition, each destination (channel/sheet/inbox/calendar), each
+field or mapping named, each schedule/timing detail, each conditional
+behavior ("only if…", "otherwise…"), and each thing to do on failure. For
+EVERY one, find the specific node that implements it. Any requirement you
+cannot tie to a node is an issue — report it, naming the requirement in the
+user's own words and the node that should have covered it. An explicitly
+requested behavior that no node implements is a "blocker" by definition:
+the workflow will not do what the user asked.
 
 Do NOT re-flag things a deterministic parameter/enum/connectivity checker would
 already catch (invented parameter names, disconnected nodes, wrong credential
-IDs) — assume those are handled elsewhere. Focus only on judgment calls: would
-this workflow, AS DESIGNED, actually do the right thing when it runs.
+IDs) — assume those are handled elsewhere. Beyond the coverage sweep above,
+focus on judgment calls: would this workflow, AS DESIGNED, actually do the
+right thing when it runs.
 
 If you find nothing wrong, return an empty list — do not invent issues to have
 something to say.
@@ -584,8 +622,12 @@ signal about whether anything improved.
     "reads the whole sheet each time so won't scale", "a Merge node would be
     cleaner". Real observations, but the workflow does what was asked.
 
-Bias toward "defect" over "blocker" when unsure. A blocker asserts this WILL
-fail — only claim it when you can name the node and the exact mechanism.
+Bias toward "defect" over "blocker" when unsure about a RUNTIME-BEHAVIOR
+claim — asserting something WILL fail requires naming the node and the exact
+mechanism. This does NOT apply to missing requirements: a behavior the user
+explicitly asked for that no node implements is a "blocker" regardless of how
+cleanly the rest of the workflow runs, because the automation does not do
+what it was asked to do. Do not downgrade those to "defect" or "nit".
 
 EVERY issue must name the specific node in the "node" field. If you cannot
 point at a node, you do not understand the problem well enough to report it —

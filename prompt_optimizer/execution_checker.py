@@ -68,8 +68,16 @@ VERIFIED PLATFORM FACTS — these override your own priors about n8n; every \
 one of them was previously flagged (wrongly) by a checker like you, and each \
 wrong flag sent the builder off breaking a correct workflow:
 - With a Structured Output Parser attached, an AI Agent's output item is \
-ALWAYS { "output": <parsed object> }. References like $json.output.field or \
-$('AI Agent').item.json.output.field are CORRECT — never flag them.
+ALWAYS { "output": <parsed object> } — exactly ONE level of wrapping. So \
+$json.output.field and $('AI Agent').item.json.output.field are CORRECT and \
+COMPLETE references to a schema field. There is NO second/double wrapping: \
+never "correct" these to $json.output.output.field — that path does not \
+exist and demanding it breaks a working workflow.
+- The approval-gate DM goes to the WORKFLOW OWNER, so a hardcoded owner \
+user ID in "Get DM Channel ID" is CORRECT and intended. Never demand that \
+it be derived dynamically from the trigger/chat input or "routed to the \
+right person" — the approver is the owner, not the person who triggered the \
+run or the subject of the message.
 - $('Node Name') references resolve from executed-node data regardless of \
 how many nodes sit between the referenced node and the current one — \
 "the data context may not be preserved" is not a real n8n failure mode. \

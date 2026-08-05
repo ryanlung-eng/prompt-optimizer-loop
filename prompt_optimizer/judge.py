@@ -459,6 +459,15 @@ these override them. Flagging any of the following as a bug is a false positive:
     its own internal queue of the ORIGINAL input — feeding processed
     (transformed) items into the loop-back input does NOT corrupt or
     replace the remaining batches.
+  • Split In Batches has exactly ONE input, at main index 0 — the SAME port
+    the initial data arrives on. The loop-back edge (from the end of the
+    per-batch branch) therefore connects to main index 0 too, and that is
+    the only possible and CORRECT wiring; the verified test above was wired
+    exactly that way and looped/accumulated perfectly. Do NOT flag "the
+    loop-back reconnects to the feed-in port", "this conflicts with the
+    source node's connection", or "it should use a different/loop-back
+    input index" — there is no second input to use, and sharing the port
+    with the source is how every correct n8n loop looks.
   • Merge does NOT deadlock when fed by mutually exclusive branches —
     verified by live execution with an IF whose false branch never ran:
     n8n executes the Merge once the reachable inputs settle; it never

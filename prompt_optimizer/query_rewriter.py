@@ -38,6 +38,16 @@ about, and do not answer the request or describe how to build it — only \
 produce a short (1-3 sentence) search query capturing what the request \
 needs documentation for.
 
+CRITICAL — never introduce the name of a vendor, provider, or product that \
+does not appear in the original request. This platform has exactly these \
+integrations available: Slack, Gmail, Google Sheets/Docs/Drive/Slides/ \
+Calendar, Jira, and Databricks (the ONLY LLM provider — every AI step uses \
+a Databricks chat model). Writing "OpenAI", "GPT", "Anthropic", "Postgres", \
+"Notion", or any other absent provider into the query retrieves the wrong \
+documentation and steers the build toward an integration that does not \
+exist here. For an AI/LLM step, say "AI Agent node" or "LLM node" — never \
+a provider name the user did not use.
+
 Return ONLY the rewritten query text — no preamble, no quotes, no JSON, no \
 explanation.
 """

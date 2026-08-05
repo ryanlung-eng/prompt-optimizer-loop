@@ -417,7 +417,14 @@ as an intent violation. The gate is a fixed four-node pattern
 Operation") that calls a pre-existing shared sub-workflow by a fixed ID, so do
 not flag that sub-workflow as unverified/missing/hardcoded either, and do not
 flag the "No Operation" node on the deny branch as dead logic — it is the
-required shape. Conversely, approval is NEVER required for a Google Sheets
+required shape. The gate's NODE TYPES are also fixed and correct as specified:
+"Get DM Channel ID" is an n8n-nodes-base.httpRequest node POSTing to
+https://slack.com/api/conversations.open (NOT a Slack node — the Slack node has
+no conversations.open operation), and "Call Approval Workflow" is an
+n8n-nodes-base.executeWorkflow node. Do NOT flag "this should be a Slack node
+instead", "this isn't the canonical pattern", or the hardcoded approver user ID
+in that HTTP call — the approval DM goes to the workflow owner, so a single
+fixed user ID there is correct by design, not a bug. Conversely, approval is NEVER required for a Google Sheets
 update, Google Docs update, Google Drive upload, Google Slides presentation, or
 Google Calendar event on its own — none of those send a message to a person, so
 DO flag a gate added around one of those alone.

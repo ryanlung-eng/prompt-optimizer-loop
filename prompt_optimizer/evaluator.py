@@ -13,6 +13,7 @@ needs to; we only treat it as a failure if it never converges.
 import asyncio
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -108,6 +109,42 @@ _REPAIRABLE_WARNING_MARKERS = (
     "n8n will not expose it to the agent",   # _check_ai_tool_wiring
     "n8n silently ignores the connected parser",  # _check_output_parser_disabled
 )
+
+# The approval gate is a platform DEFAULT the user may explicitly decline
+# (see config.yaml / judge.py) — but _check_approval_gate is a static graph
+# walk that cannot see the request, so it flags every ungated send including
+# ones the user asked to be automatic. Feeding those into a repair turn is
+# actively harmful: a live benchmark showed all three arms firing a Layer-2
+# repair as their FINAL turn on the one scenario with an explicit opt-out,
+# shipping a re-gated workflow that the judge then (correctly) scored as an
+# intent violation — 7 of 31 blockers that run, the single largest class,
+# entirely created by the repair itself. An in-prompt "unless you asked for
+# this" escape clause did NOT hold, so the suppression is done here instead.
+# Deliberately narrow phrasings (validated against all 17 hard scenarios:
+# fires on exactly the one with a real opt-out, none of the other 16).
+_GATE_OPTOUT_RE = re.compile(
+    r"""(
+        \b(go(es)?\s+out|sent|send|sending|repl(y|ies)|deliver(ed)?)\s+(right\s+)?automatic(ally)? |
+        \bautomatic(ally)?\s+(send|sent|repl|go\s+out|deliver) |
+        \bauto-?sen[dt] |
+        \bno\s+approval |
+        \bwithout\s+(a\s+|any\s+|human\s+)*approval |
+        \bdon.?t\s+need\s+approval |
+        \bskip(ping|s)?\s+(the\s+)?approval |
+        \bno\s+need\s+for\s+approval
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+_GATE_WARNING_MARKER = "no approval gate upstream"
+
+
+def _has_explicit_gate_optout(request_text: str) -> bool:
+    """True when the request explicitly asks for some send to go out without
+    approval. Used ONLY to suppress the gate repair turn — the judge still
+    evaluates gate placement against intent, so a genuinely missing required
+    gate is still caught; this just stops the harness from overriding the
+    user's own stated wish."""
+    return bool(_GATE_OPTOUT_RE.search(request_text or ""))
 
 
 def _looks_like_truncated_json(response: str) -> bool:
@@ -511,9 +548,15 @@ class WorkflowEvaluator:
                 # typeVersion advisories are deliberately NOT repairable:
                 # they can be false alarms from a stale local package, and
                 # "fixing" them would mean downgrading correct workflows.
+                # Gate warnings are dropped (only) when the request itself
+                # declined approval for some send — see _has_explicit_gate_optout.
+                # Every other repairable category still applies, so a request
+                # with an opt-out still gets its other violations fixed.
+                gate_optout = _has_explicit_gate_optout(inp.text)
                 repairable = [
                     w for w in structural.warnings
                     if any(m in w for m in _REPAIRABLE_WARNING_MARKERS)
+                    and not (gate_optout and _GATE_WARNING_MARKER in w)
                 ]
                 if repairable and not layer2_repaired and not last_turn:
                     layer2_repaired = True

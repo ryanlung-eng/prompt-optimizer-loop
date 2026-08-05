@@ -710,7 +710,26 @@ def _check_trigger_self_loop_risk(nodes: List[dict], connections: dict) -> List[
 # A value that LOOKS like an unfilled placeholder (all-caps snake_case,
 # YOUR_-prefixed, or ending _HERE/_PLACEHOLDER) — the same convention used
 # throughout this codebase's own KB examples (YOUR_SPREADSHEET_ID, etc.).
-_PLACEHOLDER_VALUE_RE = re.compile(r"^(YOUR_[A-Z0-9_]+|[A-Z0-9_]+_HERE|[A-Z0-9_]+_PLACEHOLDER)$")
+# Token-based rather than a fixed prefix/suffix pattern. The previous regex
+# (YOUR_*/*_HERE/*_PLACEHOLDER) missed a real shipped blocker,
+# 'REPLACE_WITH_REAL_BOT_JIRA_ACCOUNT_ID' — the model simply varied its
+# placeholder wording and walked past the check. Matching any SCREAMING_CASE
+# value containing a placeholder word as an underscore-delimited token covers
+# the whole family (REPLACE_WITH_*, SET_YOUR_*, TODO_*, *_HERE, ...) without
+# hardcoding positions. False positives are implausible: this only ever runs
+# on values compared against a real account/bot ID, and real IDs
+# (`5b10a2844c20165700ede21g`, `U0EVAL8A78631F`) contain no such token.
+_PLACEHOLDER_TOKENS = frozenset({
+    "YOUR", "YOURS", "REPLACE", "PLACEHOLDER", "HERE", "TODO", "FIXME",
+    "CHANGEME", "CHANGE", "DUMMY", "EXAMPLE", "SAMPLE", "INSERT", "XXX", "TBD",
+})
+_SCREAMING_CASE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def _is_placeholder_value(value: str) -> bool:
+    if not _SCREAMING_CASE_RE.match(value or ""):
+        return False
+    return bool(_PLACEHOLDER_TOKENS.intersection(value.split("_")))
 # A variable/field name that suggests it holds a bot/service-account's OWN
 # identity for a self-loop/anti-recursion guard, e.g. BOT_ACCOUNT_ID,
 # botUserId, selfAccountId — not just any "...Id" field.
@@ -748,7 +767,7 @@ def _check_placeholder_identity_guard(nodes: List[dict]) -> List[str]:
                 code,
             ):
                 var_name, value = var_match.group(1), var_match.group(2)
-                if not (_IDENTITY_GUARD_NAME_RE.search(var_name) and _PLACEHOLDER_VALUE_RE.match(value)):
+                if not (_IDENTITY_GUARD_NAME_RE.search(var_name) and _is_placeholder_value(value)):
                     continue
                 used_in_comparison = re.search(
                     rf"(?:{re.escape(var_name)}\s*(?:===|!==))|(?:(?:===|!==)\s*{re.escape(var_name)}\b)",
@@ -776,7 +795,7 @@ def _check_placeholder_identity_guard(nodes: List[dict]) -> List[str]:
                 if (
                     op in ("equals", "notEquals")
                     and isinstance(right, str)
-                    and _PLACEHOLDER_VALUE_RE.match(right)
+                    and _is_placeholder_value(right)
                     and _IDENTITY_GUARD_NAME_RE.search(left)
                 ):
                     warnings.append(

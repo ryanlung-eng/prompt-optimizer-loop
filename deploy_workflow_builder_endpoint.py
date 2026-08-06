@@ -385,7 +385,44 @@ _entity = ServedEntityInput(
     scale_to_zero_enabled=True,
 )
 
+def _wait_until_updatable(name: str, timeout_s: int = 2400, poll_s: int = 20) -> None:
+    """Block while a config update is in flight.
+
+    Model Serving rejects a new update with ResourceConflict while one is in
+    progress, and a FAILED deployment keeps retrying for a while before it
+    settles — so the window right after a failure is exactly when you want to
+    push a fix and exactly when it is refused. Waiting here beats making the
+    operator guess how long to sit on their hands.
+
+    UPDATE_FAILED is a terminal state, not an in-flight one: it means the last
+    attempt finished and lost. That is updatable, and is the normal case for a
+    redeploy-after-failure, so it must not be treated as "still going".
+    """
+    import time as _time
+
+    started, last = _time.time(), None
+    while _time.time() - started < timeout_s:
+        state = w.serving_endpoints.get(name=name).state
+        update = str(getattr(state, "config_update", "") or "")
+        ready = str(getattr(state, "ready", "") or "")
+        if update != last:
+            print(f"  [{int(_time.time() - started):>4}s] config_update={update or 'unknown'} ready={ready or 'unknown'}")
+            last = update
+        if "IN_PROGRESS" not in update.upper():
+            return
+        _time.sleep(poll_s)
+    raise TimeoutError(
+        f"{name} still updating after {timeout_s}s (last: {last}). Check the "
+        f"endpoint's Logs tab — a container that cannot start will retry for a "
+        f"long time before the update is marked failed."
+    )
+
+
 _existing = next((e for e in w.serving_endpoints.list() if e.name == ENDPOINT_NAME), None)
+if _existing is not None:
+    print(f"{ENDPOINT_NAME} exists — waiting for any in-flight update to settle…")
+    _wait_until_updatable(ENDPOINT_NAME)
+
 if _existing is None:
     w.serving_endpoints.create(
         name=ENDPOINT_NAME,

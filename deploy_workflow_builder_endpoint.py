@@ -230,9 +230,19 @@ from prompt_optimizer.serving import WorkflowBuilderPipeline
 cfg = load_config(str(REPO / "config.yaml"))
 pipeline = WorkflowBuilderPipeline(cfg)
 
-_result = pipeline.build(
-    "When a new row is added to my Google Sheet, post a message to #general with the row contents."
-)
+_REQUEST = ("When a new row is added to my Google Sheet, post a message to "
+            "#general with the row contents.")
+
+# Scope mode first — it is cheaper, and if retrieval or the endpoint is broken
+# it fails here in seconds rather than after a full build with repair rounds.
+_scoped = pipeline.scope(_REQUEST)
+print("scope status :", _scoped["status"])
+print("scope reply  :", (_scoped["data"] or "")[:300])
+assert _scoped["status"] in ("question", "error"), _scoped
+assert not (_scoped["data"] or "").lstrip().startswith("{"), \
+    "scope mode emitted JSON — the no-workflow-JSON guardrail is not holding"
+
+_result = pipeline.build(_REQUEST)
 print("status      :", _result["status"])
 print("valid       :", _result["valid"])
 print("repair_rounds:", _result["repair_rounds"])
@@ -268,6 +278,10 @@ _input_example = [{
                    'Slack enabled, id: "EXAMPLE-slack-0001"',
     "user_id": "U000EXAMPLE",
     "minutes_saved": "30",
+    # "" or "build" -> workflow JSON; "scope" -> conversational scoping.
+    # Must appear in the signature or n8n cannot send it and every request
+    # silently falls back to build.
+    "mode": "build",
 }]
 _output_example = [{"status": "workflow", "workflow": {}, "message": "", "valid": True,
                     "errors": [], "warnings": [], "repair_rounds": 0,

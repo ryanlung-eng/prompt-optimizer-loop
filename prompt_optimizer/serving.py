@@ -54,6 +54,14 @@ from .llm_response import content_to_text
 # Each round is a full generation call, so this is the main latency lever.
 MAX_REPAIR_ROUNDS = 3
 
+# config.yaml key for the scoping prompt. Scoping is the conversational step
+# BEFORE building: it decides whether a request is specific, safe and possible,
+# and asks for whatever is missing. It must never emit workflow JSON — that is
+# a different job with a different prompt, and a scoper that starts drafting
+# JSON both leaks half-built output to the user and pre-commits the builder to
+# a shape it never got to choose.
+SCOPER_PROMPT_KEY = "Workflow Scoper"
+
 
 @dataclass
 class RequestContext:
@@ -191,25 +199,75 @@ class WorkflowBuilderPipeline:
 
     # ----------------------------------------------------------------- api
 
-    async def build_async(self, conversation: str,
-                          context: Optional[RequestContext] = None) -> BuildResult:
+    async def _retrieve(self, client: httpx.AsyncClient, conversation: str):
+        """Retrieval + relevance filter, shared by build and scope.
+
+        Both need the same grounding: scoping decides whether something is
+        possible on this platform, which is a knowledge-base question just as
+        much as building is. Running scoping ungrounded is how it ends up
+        promising things n8n cannot do.
+        """
         from .rag_pipeline_v2 import build_retrieved_block, retrieve_and_filter
 
+        retrieved, kept = await retrieve_and_filter(
+            client, self._filter_url, self._headers, conversation, self._rag,
+        )
+        return (build_retrieved_block(kept, len(retrieved), self._rag),
+                sorted({c.source for c in kept}))
+
+    async def scope_async(self, conversation: str,
+                          context: Optional[RequestContext] = None) -> BuildResult:
+        """Conversational scoping — the step before building.
+
+        Always returns prose, never a workflow. `status` is "question" so the
+        calling workflow treats it as something to relay to the user, and
+        `data` carries the text, matching what the node downstream already
+        reads.
+        """
+        context = context or RequestContext()
+        prompt_text = self._config.prompts.get(SCOPER_PROMPT_KEY)
+        if not prompt_text:
+            return BuildResult(
+                status="error",
+                message=f'No "{SCOPER_PROMPT_KEY}" prompt in config.yaml — '
+                        f'scope mode is unavailable in this model version.',
+            )
+
+        async with httpx.AsyncClient() as client:
+            try:
+                block, kept_sources = await self._retrieve(client, conversation)
+            except Exception as e:
+                return BuildResult(status="error", message=f"Retrieval failed: {e}")
+
+            system_prompt = resolve_runtime_placeholders(
+                _assemble_custom_rag_prompt(prompt_text, block),
+                conversation=conversation,
+                credentials=context.credentials,
+                user_id=context.user_id,
+                minutes_saved=context.minutes_saved,
+            )
+            try:
+                reply = await self._generate(client, f"{system_prompt}\n\nUser: {conversation}")
+            except Exception as e:
+                return BuildResult(status="error", message=str(e),
+                                   kept_sources=kept_sources)
+
+        return BuildResult(status="question", message=reply.strip(),
+                           kept_sources=kept_sources)
+
+    async def build_async(self, conversation: str,
+                          context: Optional[RequestContext] = None) -> BuildResult:
         context = context or RequestContext()
 
         async with httpx.AsyncClient() as client:
             try:
-                retrieved, kept = await retrieve_and_filter(
-                    client, self._filter_url, self._headers, conversation, self._rag,
-                )
+                block, kept_sources = await self._retrieve(client, conversation)
             except Exception as e:
                 return BuildResult(status="error", message=f"Retrieval failed: {e}")
 
-            block = build_retrieved_block(kept, len(retrieved), self._rag)
             system_prompt = _assemble_custom_rag_prompt(
                 self._config.prompts[self._config.benchmark.node_name], block,
             )
-            kept_sources = sorted({c.source for c in kept})
 
             # The production prompt is written for n8n, so it carries n8n
             # expressions. Reaching the model unresolved they are just opaque
@@ -292,6 +350,11 @@ class WorkflowBuilderPipeline:
                     f"with '}}'. No prose before or after."
                 )
 
+    def scope(self, conversation: str,
+              context: Optional[RequestContext] = None) -> Dict[str, Any]:
+        """Blocking scope entry point. See build() for the event-loop handling."""
+        return self._run(self.scope_async(conversation, context))
+
     def build(self, conversation: str,
               context: Optional[RequestContext] = None) -> Dict[str, Any]:
         """Blocking entry point — what the MLflow model calls per request.
@@ -304,7 +367,10 @@ class WorkflowBuilderPipeline:
         running we hand the coroutine to a worker thread with its own loop,
         which is correct in both cases and needs no monkey-patching.
         """
-        coro = self.build_async(conversation, context)
+        return self._run(self.build_async(conversation, context))
+
+    @staticmethod
+    def _run(coro) -> Dict[str, Any]:
         try:
             asyncio.get_running_loop()
         except RuntimeError:

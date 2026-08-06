@@ -57,7 +57,25 @@ class WorkflowBuilderModel(mlflow.pyfunc.PythonModel):
         # Credentials/user/minutes are resolved by n8n per request rather than
         # baked into the prompt — see RequestContext. Absent ones degrade the
         # answer (no credentials wired) instead of failing the call.
-        return self._pipeline.build(conversation, _context_from_payload(payload))
+        ctx = _context_from_payload(payload)
+
+        # One endpoint, two jobs. "scope" is the conversational step that
+        # decides whether a request is buildable; "build" produces the
+        # workflow. They share the index and the retrieval path but not the
+        # prompt. Default is build, so existing callers that send no mode keep
+        # working unchanged.
+        mode = ""
+        if isinstance(payload, dict):
+            mode = str(payload.get("mode") or "").strip().lower()
+
+        if mode in ("scope", "scoping"):
+            return self._pipeline.scope(conversation, ctx)
+        if mode in ("", "build", "builder"):
+            return self._pipeline.build(conversation, ctx)
+        msg = f'Unknown mode "{mode}" — expected "scope" or "build".'
+        return {"status": "error", "message": msg, "data": msg, "workflow": None,
+                "valid": False, "errors": [], "warnings": [], "repair_rounds": 0,
+                "kept_sources": []}
 
     def predict(self, context, model_input) -> List[Dict[str, Any]]:
         """Accepts a DataFrame (the split/records shapes Model Serving sends)

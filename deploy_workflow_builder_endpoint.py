@@ -170,6 +170,26 @@ _output_example = [{"status": "workflow", "workflow": {}, "message": "", "valid"
                     "errors": [], "warnings": [], "repair_rounds": 0,
                     "kept_sources": [], "data": "{}"}]
 
+# Declaring the Databricks resources this model calls lets Model Serving do
+# automatic authentication passthrough: it mints a short-lived credential for
+# exactly these resources and injects it into the container. That is why no
+# secret scope and no long-lived PAT are needed below.
+#
+# The notebooks get their token from `dbutils ... apiToken()`, which is the
+# running user's identity. A serving replica has no notebook context and no
+# user, so that call does not exist there — which is the whole reason this
+# needs saying explicitly rather than inheriting what the notebooks do.
+from mlflow.models.resources import (
+    DatabricksServingEndpoint, DatabricksVectorSearchIndex,
+)
+
+_resources = [
+    DatabricksVectorSearchIndex(index_name=cfg.rag.index_name),
+    DatabricksServingEndpoint(endpoint_name=cfg.rag.generation_endpoint),
+    DatabricksServingEndpoint(endpoint_name=cfg.databricks.fast_generation_endpoint),
+]
+print("declared resources:", [r.to_dict() for r in _resources])
+
 with mlflow.start_run(run_name="n8n-workflow-builder-rag") as run:
     info = mlflow.pyfunc.log_model(
         artifact_path="model",
@@ -179,6 +199,7 @@ with mlflow.start_run(run_name="n8n-workflow-builder-rag") as run:
         signature=infer_signature(_input_example, _output_example),
         input_example=_input_example,
         registered_model_name=MODEL_NAME,
+        resources=_resources,
         pip_requirements=["mlflow", "httpx", "tenacity", "pyyaml",
                           "databricks-ai-search", "pandas"],
     )
@@ -191,9 +212,16 @@ print("registered version:", _version)
 
 # MAGIC %md
 # MAGIC ## Create / update the serving endpoint
-# MAGIC The endpoint needs its OWN Databricks credentials at runtime — it calls
-# MAGIC Vector Search and two model-serving endpoints internally. Supplied as
-# MAGIC environment variables backed by secrets, never baked into the model.
+# MAGIC The endpoint calls Vector Search and two model-serving endpoints at run
+# MAGIC time, so it needs credentials of its own — a serving replica has no
+# MAGIC notebook context and therefore no `dbutils ... apiToken()` to borrow the
+# MAGIC way every notebook in this repo does.
+# MAGIC
+# MAGIC Those credentials come from the `resources=` declared at log time
+# MAGIC (automatic authentication passthrough), so there is **no secret scope to
+# MAGIC create and no long-lived PAT to rotate**. If passthrough ever fails —
+# MAGIC for a resource type it does not cover — the commented fallback below
+# MAGIC supplies a secret-backed token instead.
 
 # COMMAND ----------
 
@@ -204,19 +232,19 @@ from databricks.sdk.service.serving import (
 
 w = WorkspaceClient()
 
-# NOTE: point these at a real secret scope/key before running. The host can be
-# a literal; the token must not be.
-_env_vars = {
-    "DATABRICKS_HOST": os.environ["DATABRICKS_HOST"],
-    "DATABRICKS_TOKEN": "{{secrets/n8n-builder/databricks-token}}",
-}
+# Fallback only. Uncomment and point at a real scope/key ONLY if passthrough
+# turns out not to cover something; then pass environment_vars=_env_vars below.
+# The host may be a literal; the token must never be.
+# _env_vars = {
+#     "DATABRICKS_HOST": os.environ["DATABRICKS_HOST"],
+#     "DATABRICKS_TOKEN": "{{secrets/<scope>/<key>}}",
+# }
 
 _entity = ServedEntityInput(
     entity_name=MODEL_NAME,
     entity_version=_version,
     workload_size="Small",
     scale_to_zero_enabled=True,
-    environment_vars=_env_vars,
 )
 
 _existing = next((e for e in w.serving_endpoints.list() if e.name == ENDPOINT_NAME), None)

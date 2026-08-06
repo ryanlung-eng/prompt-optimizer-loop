@@ -22,6 +22,7 @@ from typing import List
 import httpx
 
 from .rag_retriever import RetrievedChunk
+from .llm_response import content_to_text
 
 _FILTER_SYSTEM = """\
 You are filtering retrieved reference documentation before it's handed to an \
@@ -107,7 +108,7 @@ async def filter_relevant_chunks(
         resp.raise_for_status()
         body = resp.json()
         choices = body.get("choices") or []
-        content = (choices[0].get("message") or {}).get("content") if choices else None
+        content = content_to_text((choices[0].get("message") or {}).get("content")) if choices else None
         if not content:
             raise ValueError(f"Empty filter response: {json.dumps(body)[:300]}")
         start, end = content.find("{"), content.rfind("}")

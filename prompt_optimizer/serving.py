@@ -44,6 +44,7 @@ from .evaluator import (
     _looks_like_truncated_json,
 )
 from .validator import validate_workflow_json
+from .llm_response import content_to_text
 
 # Repair rounds allowed inside a single call. Lower than the benchmark's 7,
 # because those 7 also had to absorb simulated-user clarification turns, which
@@ -110,7 +111,7 @@ class WorkflowBuilderPipeline:
         body = resp.json()
         choices = body.get("choices") or []
         if choices and isinstance(choices[0], dict):
-            content = (choices[0].get("message") or {}).get("content")
+            content = content_to_text((choices[0].get("message") or {}).get("content"))
             if content:
                 return content
         output = body.get("output")

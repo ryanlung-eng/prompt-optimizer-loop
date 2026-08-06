@@ -11,6 +11,7 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponent
 
 from .config import DatabricksConfig, OptimizerConfig, JudgeConfig
 from .judge import EvalResult
+from .llm_response import content_to_text
 
 
 def _unwrap(e: Exception) -> Exception:
@@ -97,7 +98,7 @@ async def _db_call(
     # endpoints, e.g. "metadata": null) still returns None and crashes a
     # chained .get()/subscript otherwise, so guard every step explicitly.
     choices = body.get("choices") or []
-    content = (choices[0].get("message") or {}).get("content") if choices and isinstance(choices[0], dict) else None
+    content = content_to_text((choices[0].get("message") or {}).get("content")) if choices and isinstance(choices[0], dict) else None
     if not content or not content.strip():
         finish_reason = choices[0].get("finish_reason") if choices and isinstance(choices[0], dict) else None
         raise ValueError(

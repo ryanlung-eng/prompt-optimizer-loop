@@ -22,12 +22,14 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_random_exponent
 
 from . import execution_checker as _execution_checker_module
 from . import query_rewriter as _query_rewriter_module
+from . import llm_response as _llm_response_module
 from . import state_simulation as _state_simulation_module
 from . import rag_retriever as _rag_retriever_module
 from . import validator as _validator_module
 from .config import DatabricksConfig
 from .synthetic_data import SyntheticInput
 from .validator import validate_workflow_json
+from .llm_response import content_to_text
 
 # Hashes THIS file's own source, validator.py's, check_params.js's,
 # rag_retriever.py's, execution_checker.py's, AND query_rewriter.py's — all
@@ -54,6 +56,7 @@ _LOGIC_VERSION = hashlib.sha256(
         + Path(_execution_checker_module.__file__).read_text()
         + Path(_query_rewriter_module.__file__).read_text()
         + Path(_state_simulation_module.__file__).read_text()
+        + Path(_llm_response_module.__file__).read_text()
     ).encode()
 ).hexdigest()[:16]
 
@@ -414,7 +417,7 @@ class WorkflowEvaluator:
         content = None
         choices = body.get("choices") or []
         if choices and isinstance(choices[0], dict):
-            content = (choices[0].get("message") or {}).get("content")
+            content = content_to_text((choices[0].get("message") or {}).get("content"))
         else:
             for item in body.get("output") or []:
                 if not isinstance(item, dict) or item.get("type") != "message":

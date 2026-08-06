@@ -36,6 +36,7 @@ change what's being asked.
 from typing import List, Optional
 
 import httpx
+from .llm_response import content_to_text
 
 _REWRITE_SYSTEM = """\
 You are rewriting a user's natural-language automation request into a short, \
@@ -128,7 +129,7 @@ async def rewrite_query(
         resp.raise_for_status()
         body = resp.json()
         choices = body.get("choices") or []
-        content = (choices[0].get("message") or {}).get("content") if choices else None
+        content = content_to_text((choices[0].get("message") or {}).get("content")) if choices else None
         if not content or not content.strip():
             return original_text
         return content.strip()

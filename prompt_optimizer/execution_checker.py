@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import List
 
 import httpx
+from .llm_response import content_to_text
 
 _EXECUTION_CHECK_SYSTEM = """\
 You are tracing through an n8n workflow's actual execution — not reviewing \
@@ -162,7 +163,7 @@ async def check_execution(
         resp.raise_for_status()
         body = resp.json()
         choices = body.get("choices") or []
-        content = (choices[0].get("message") or {}).get("content") if choices else None
+        content = content_to_text((choices[0].get("message") or {}).get("content")) if choices else None
         if not content:
             return []
         start, end = content.find("{"), content.rfind("}")

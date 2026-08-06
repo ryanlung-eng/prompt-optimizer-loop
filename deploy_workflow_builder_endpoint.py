@@ -17,9 +17,12 @@
 # MAGIC with the CUSTOM.ibottaKnowledgeAssistant node — that node speaks a
 # MAGIC KA-specific wire format, while this is an MLflow PyFunc taking
 # MAGIC `{inputs: [...]}` and returning `{predictions: [...]}`. The workflow uses
-# MAGIC the native Databricks node (resource: modelServing, operation:
-# MAGIC queryEndpoint) followed by an Unwrap Builder Response Code node that
-# MAGIC flattens `predictions[0]`, so everything downstream of it is unchanged.
+# MAGIC the `CUSTOM.databricks` node (resource: modelServing, operation:
+# MAGIC queryEndpoint) — NOT the identically-named `n8n-nodes-base.databricks`,
+# MAGIC which wants a `databricksApi` credential this instance does not have;
+# MAGIC CUSTOM.databricks takes the `databricks` type, which it does. An Unwrap
+# MAGIC Builder Response Code node then flattens `predictions[0]`, so everything
+# MAGIC downstream of it is unchanged.
 # MAGIC
 # MAGIC **Why the schema check is pure Python now.** The old validator shelled
 # MAGIC out to check_params.js, which would have meant a Node runtime plus
@@ -28,9 +31,10 @@
 # MAGIC `n8n_schema_check/equivalence_check.py` — run it if you touch either.
 # MAGIC
 # MAGIC **The one packaging catch:** the checker needs n8n's node manifest
-# MAGIC (`nodes.json`, 7.6 MB) at runtime. It normally reads it out of
-# MAGIC node_modules, which will not exist here, so the cell below copies it
-# MAGIC next to the module and it ships as part of the code artifact.
+# MAGIC (`nodes.json`, ~8 MB) at runtime, and that file is not in git — it lives
+# MAGIC inside the gitignored `node_modules/`. The staging cell below sources it
+# MAGIC (copying an existing one, or running `npm install` to fetch it) and puts
+# MAGIC it beside the module so it ships inside the code artifact.
 
 # COMMAND ----------
 
@@ -92,18 +96,50 @@ MODEL_NAME = "dev.platform.n8n_workflow_builder"
 # MAGIC package — not something to vendor into a public repo. So a fresh clone
 # MAGIC never has it, and this notebook has to PRODUCE it rather than assume it.
 # MAGIC
-# MAGIC The package is staged to local disk first, so the manifest can be dropped
-# MAGIC beside the checker without writing into the Repo folder (read-only on some
-# MAGIC workspaces, and a source of confusing diffs even when it isn't). That
-# MAGIC staged copy is then prepended to `sys.path` and is what gets logged — so
-# MAGIC the smoke tests below exercise exactly the tree that ships.
+# MAGIC The package is staged to scratch disk first, so the manifest can be
+# MAGIC dropped beside the checker without writing into the Repo folder (read-only
+# MAGIC on some workspaces, and a source of confusing diffs even when it isn't).
+# MAGIC That staged copy is then prepended to `sys.path` and is what gets logged —
+# MAGIC so the smoke tests below exercise exactly the tree that ships.
+# MAGIC
+# MAGIC The scratch location is probed rather than hardcoded: `/local_disk0` is
+# MAGIC the classic-cluster answer but does not exist on serverless.
 
 # COMMAND ----------
 
 import json
 import subprocess
+import tempfile
 
-STAGE = Path("/local_disk0/wf_builder_pkg")
+
+def _writable_base() -> Path:
+    """First scratch location this compute can actually write to.
+
+    /local_disk0 is the classic-cluster answer and is preferred because it
+    persists across cells, so a later re-run reuses any npm install. It does
+    not exist (or is not writable) on serverless, hence the fallbacks — and
+    the probe is an actual write, not an os.access() guess, because the
+    failure this replaces was a PermissionError on a path that looked fine.
+    """
+    for base in (Path("/local_disk0"), Path(tempfile.gettempdir()), Path.home()):
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            probe = base / ".wf_builder_write_probe"
+            probe.write_text("ok")
+            probe.unlink()
+            return base
+        except Exception:
+            continue
+    raise RuntimeError(
+        "No writable scratch directory found (tried /local_disk0, "
+        f"{tempfile.gettempdir()}, {Path.home()}). Set one explicitly below."
+    )
+
+
+SCRATCH = _writable_base()
+print(f"Scratch base: {SCRATCH}")
+
+STAGE = SCRATCH / "wf_builder_pkg"
 PKG = STAGE / "prompt_optimizer"
 _MANIFEST_REL = Path("n8n_schema_check/nodes.json")
 
@@ -127,9 +163,9 @@ if _found is not None:
     shutil.copyfile(_found, _dst)
     print(f"Manifest from {_found}")
 else:
-    # Fetch it. Installed to local disk, not the Repo folder — installing npm
+    # Fetch it. Installed to scratch, not the Repo folder — installing npm
     # packages under /Workspace was tried before and is slow and flaky.
-    _npm_dir = Path("/local_disk0/n8n_schema_check_npm")
+    _npm_dir = SCRATCH / "n8n_schema_check_npm"
     _npm_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(REPO / "prompt_optimizer/n8n_schema_check/package.json",
                     _npm_dir / "package.json")

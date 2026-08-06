@@ -81,31 +81,108 @@ MODEL_NAME = "dev.platform.n8n_workflow_builder"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Bundle the node manifest
-# MAGIC `schema_check.py` reads `nodes.json` from node_modules when present and
-# MAGIC falls back to a copy beside itself. The serving image has no npm install,
-# MAGIC so the fallback copy is what it will actually use — this materialises it.
+# MAGIC ## Stage the package and materialise the node manifest
+# MAGIC
+# MAGIC `schema_check.py` needs n8n's `nodes.json` (~8 MB) at runtime. It normally
+# MAGIC reads it out of `node_modules`, which will not exist in the serving image,
+# MAGIC so a copy has to ship inside the code artifact.
+# MAGIC
+# MAGIC **`nodes.json` is not in git and cannot be.** It lives inside
+# MAGIC `node_modules/`, which is gitignored, and it is ~8 MB of a third-party
+# MAGIC package — not something to vendor into a public repo. So a fresh clone
+# MAGIC never has it, and this notebook has to PRODUCE it rather than assume it.
+# MAGIC
+# MAGIC The package is staged to local disk first, so the manifest can be dropped
+# MAGIC beside the checker without writing into the Repo folder (read-only on some
+# MAGIC workspaces, and a source of confusing diffs even when it isn't). That
+# MAGIC staged copy is then prepended to `sys.path` and is what gets logged — so
+# MAGIC the smoke tests below exercise exactly the tree that ships.
 
 # COMMAND ----------
 
-_src = REPO / "prompt_optimizer/n8n_schema_check/node_modules/n8n-nodes-base/dist/types/nodes.json"
-_dst = REPO / "prompt_optimizer/n8n_schema_check/nodes.json"
-if _dst.exists():
-    print(f"Bundled manifest already present: {_dst} ({_dst.stat().st_size:,} bytes)")
-elif _src.exists():
-    shutil.copyfile(_src, _dst)
-    print(f"Copied manifest -> {_dst} ({_dst.stat().st_size:,} bytes)")
-else:
-    raise FileNotFoundError(
-        f"Neither {_dst} nor {_src} exists. Run `npm install --ignore-scripts` in "
-        f"prompt_optimizer/n8n_schema_check first, or commit nodes.json — without it "
-        f"the endpoint silently loses invented-parameter detection."
-    )
+import json
+import subprocess
 
-# Prove the checker works from the bundled copy BEFORE logging a model that
-# depends on it — a silently-degraded validator is the failure mode worth
-# spending a cell to rule out.
+STAGE = Path("/local_disk0/wf_builder_pkg")
+PKG = STAGE / "prompt_optimizer"
+_MANIFEST_REL = Path("n8n_schema_check/nodes.json")
+
+if STAGE.exists():
+    shutil.rmtree(STAGE)
+STAGE.mkdir(parents=True)
+shutil.copytree(
+    REPO / "prompt_optimizer", PKG,
+    ignore=shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc"),
+)
+print(f"Staged package -> {PKG}")
+
+_dst = PKG / _MANIFEST_REL
+_candidates = [
+    REPO / "prompt_optimizer/n8n_schema_check/nodes.json",
+    REPO / "prompt_optimizer/n8n_schema_check/node_modules/n8n-nodes-base/dist/types/nodes.json",
+]
+_found = next((p for p in _candidates if p.exists()), None)
+
+if _found is not None:
+    shutil.copyfile(_found, _dst)
+    print(f"Manifest from {_found}")
+else:
+    # Fetch it. Installed to local disk, not the Repo folder — installing npm
+    # packages under /Workspace was tried before and is slow and flaky.
+    _npm_dir = Path("/local_disk0/n8n_schema_check_npm")
+    _npm_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO / "prompt_optimizer/n8n_schema_check/package.json",
+                    _npm_dir / "package.json")
+    print(f"No manifest found — running npm install in {_npm_dir} (a few minutes)…")
+    try:
+        _r = subprocess.run(
+            ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund"],
+            cwd=_npm_dir, capture_output=True, text=True, timeout=1800,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "npm is not available on this cluster, and nodes.json is not present. "
+            "Either use a runtime with Node installed, or run "
+            "`npm install --ignore-scripts` in prompt_optimizer/n8n_schema_check "
+            "locally and upload the resulting "
+            "node_modules/n8n-nodes-base/dist/types/nodes.json to "
+            f"{_candidates[0]} in the Workspace."
+        )
+    if _r.returncode != 0:
+        raise RuntimeError(f"npm install failed:\n{_r.stdout[-2000:]}\n{_r.stderr[-2000:]}")
+    _npm_manifest = _npm_dir / "node_modules/n8n-nodes-base/dist/types/nodes.json"
+    if not _npm_manifest.exists():
+        raise FileNotFoundError(
+            f"npm install succeeded but {_npm_manifest} is missing — the "
+            f"n8n-nodes-base layout may have changed."
+        )
+    shutil.copyfile(_npm_manifest, _dst)
+    print(f"Manifest from npm install")
+
+print(f"Bundled manifest: {_dst} ({_dst.stat().st_size:,} bytes)")
+assert _dst.stat().st_size > 1_000_000, "manifest implausibly small — truncated copy?"
+
+# From here on, import from the STAGED copy, so everything verified below is
+# the same tree that gets logged.
+sys.path.insert(0, str(STAGE))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Prove the checker actually works from the bundled copy BEFORE logging a
+# MAGIC model that depends on it. A silently-degraded validator — one that
+# MAGIC returns "no issues" because the manifest failed to load — is the failure
+# MAGIC mode worth spending a cell to rule out, since it looks like success.
+
+# COMMAND ----------
+
 from prompt_optimizer.schema_check import check_workflow
+
+_loaded_from = Path(sys.modules["prompt_optimizer.schema_check"].__file__)
+assert str(_loaded_from).startswith(str(STAGE)), (
+    f"imported the Repo copy ({_loaded_from}), not the staged one — sys.path "
+    f"ordering is wrong, so this probe would not be testing what ships."
+)
 
 _probe = check_workflow({"nodes": [{"name": "S", "type": "n8n-nodes-base.slack",
                                     "typeVersion": 2.3,
@@ -113,7 +190,8 @@ _probe = check_workflow({"nodes": [{"name": "S", "type": "n8n-nodes-base.slack",
                                                    "operation": "post",
                                                    "totallyInvented": "x"}}]})
 assert _probe["issues"], f"schema check returned nothing — manifest not loading: {_probe}"
-print("Schema check live:", _probe["issues"][0]["unknownParams"])
+assert "totallyInvented" in _probe["issues"][0]["unknownParams"], _probe
+print("Schema check live, caught:", _probe["issues"][0]["unknownParams"])
 
 # COMMAND ----------
 
@@ -195,7 +273,10 @@ with mlflow.start_run(run_name="n8n-workflow-builder-rag") as run:
         artifact_path="model",
         python_model=WorkflowBuilderModel(),
         artifacts={"config": str(REPO / "config.yaml")},
-        code_paths=[str(REPO / "prompt_optimizer")],
+        # The STAGED package, not the Repo one — only the staged copy has
+        # nodes.json beside the checker, and shipping the Repo copy would give
+        # an endpoint whose schema check silently finds nothing.
+        code_paths=[str(PKG)],
         signature=infer_signature(_input_example, _output_example),
         input_example=_input_example,
         registered_model_name=MODEL_NAME,

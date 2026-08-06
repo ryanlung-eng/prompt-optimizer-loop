@@ -30,6 +30,7 @@ verify, so they stay internal and the user never sees them.
 """
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -293,8 +294,24 @@ class WorkflowBuilderPipeline:
 
     def build(self, conversation: str,
               context: Optional[RequestContext] = None) -> Dict[str, Any]:
-        """Blocking entry point — what the MLflow model calls per request."""
-        return asyncio.run(self.build_async(conversation, context)).to_dict()
+        """Blocking entry point — what the MLflow model calls per request.
+
+        `asyncio.run()` refuses to run inside an already-running event loop.
+        That is the normal state in a Databricks notebook, and it is a real
+        possibility in a serving container too if the request handler calls
+        predict() on the loop thread — so this is handled here rather than by
+        asking every caller to install nest_asyncio. When a loop is already
+        running we hand the coroutine to a worker thread with its own loop,
+        which is correct in both cases and needs no monkey-patching.
+        """
+        coro = self.build_async(conversation, context)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro).to_dict()       # no loop here: normal path
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result().to_dict()
 
 
 def _context_from_payload(payload: Any) -> RequestContext:

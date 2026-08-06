@@ -44,7 +44,9 @@ class WorkflowBuilderModel(mlflow.pyfunc.PythonModel):
         self._pipeline = WorkflowBuilderPipeline(load_config(config_path))
 
     def _one(self, payload: Any) -> Dict[str, Any]:
-        from prompt_optimizer.serving import _conversation_from_payload
+        from prompt_optimizer.serving import (
+            _context_from_payload, _conversation_from_payload,
+        )
 
         try:
             conversation = _conversation_from_payload(payload)
@@ -52,7 +54,10 @@ class WorkflowBuilderModel(mlflow.pyfunc.PythonModel):
             return {"status": "error", "message": str(e), "data": str(e),
                     "workflow": None, "valid": False, "errors": [], "warnings": [],
                     "repair_rounds": 0, "kept_sources": []}
-        return self._pipeline.build(conversation)
+        # Credentials/user/minutes are resolved by n8n per request rather than
+        # baked into the prompt — see RequestContext. Absent ones degrade the
+        # answer (no credentials wired) instead of failing the call.
+        return self._pipeline.build(conversation, _context_from_payload(payload))
 
     def predict(self, context, model_input) -> List[Dict[str, Any]]:
         """Accepts a DataFrame (the split/records shapes Model Serving sends)

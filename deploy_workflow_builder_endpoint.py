@@ -154,7 +154,18 @@ from prompt_optimizer.serving_model import WorkflowBuilderModel
 
 mlflow.set_registry_uri("databricks-uc")
 
-_input_example = [{"question": "Post a Slack message to #general every Monday at 9am."}]
+# All four fields must appear in the signature, not just `question`: Model
+# Serving validates the request against it, so a field missing here is a field
+# n8n cannot send. credentials/user_id/minutes_saved are supplied per request
+# by the workflow (Credential Parser, Slack Trigger, AI Agent) rather than
+# hardcoded in config.yaml.
+_input_example = [{
+    "question": "Post a Slack message to #general every Monday at 9am.",
+    "credentials": 'The user has the following credentials configured:\n'
+                   'Slack enabled, id: "EXAMPLE-slack-0001"',
+    "user_id": "U000EXAMPLE",
+    "minutes_saved": "30",
+}]
 _output_example = [{"status": "workflow", "workflow": {}, "message": "", "valid": True,
                     "errors": [], "warnings": [], "repair_rounds": 0,
                     "kept_sources": [], "data": "{}"}]
@@ -237,7 +248,13 @@ _resp = httpx.post(
     _url,
     headers={"Authorization": f"Bearer {os.environ['DATABRICKS_TOKEN']}",
              "Content-Type": "application/json"},
-    json={"inputs": [{"question": "Every Monday at 9am, post a summary to #general."}]},
+    json={"inputs": [{
+        "question": "Every Monday at 9am, post a summary to #general.",
+        "credentials": 'The user has the following credentials configured:\n'
+                       'Slack enabled, id: "SMOKE-slack-0001"',
+        "user_id": "U000SMOKE",
+        "minutes_saved": "30",
+    }]},
     timeout=600,
 )
 print(_resp.status_code)

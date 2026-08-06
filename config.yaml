@@ -10,17 +10,21 @@ prompts:
     {{ $('Thread Formatter').item.json.conversation }}
 
     Credentials:
-    The user has the following credentials configured:
-    Gmail enabled, id: YzPY9a7o7oJjpL3j
-    Google Sheets enabled, id: 6LFdjEidf1KbbG0p
-    Google Sheets Trigger enabled, id: Z2l3ru55RTOmzlGB
-    Databricks enabled, id: "DNV5Ld0Um1SCcA04"
-    Jira enabled, id: "Q8l4d25oEqHPYX7H"
-    Slack enabled, id: "qrX7FbQkvUaMRB0N"
-    Google Docs enabled, id: "N7bH4jC1mZ8qFdWe"
-    Google Drive enabled, id: "P5tL9xM3vB7nJhKr"
-    Google Slides enabled, id: "T8vN2xQ4mW6rL9pJ"
-    Google Calendar enabled, id: "R4cH7wZ2nD9xL3vM"
+    {{ $('Credential Parser').item.json.credentialContext }}
+
+    Use ONLY credential IDs that appear in that list. Never carry over a
+    credential ID you have seen before, and never invent one that looks
+    plausible — the list above is the only source of truth, and it is rebuilt
+    per request from the credentials this specific person can actually reach.
+    If a node needs a credential that is not in the list, leave that node's
+    "credentials" unset and say plainly in your reply which credential the user
+    still has to attach. A workflow that imports with a missing credential is
+    recoverable in ten seconds; one wired to an ID the importing project cannot
+    see fails at run time with an error that points nowhere.
+
+    If an entry lists several credentials for one service, pick the one whose
+    name best fits the request, and name your choice in your reply so the user
+    can correct it.
 
     User ID:
     {{ $('Slack Trigger').item.json.user }}
@@ -61,7 +65,10 @@ prompts:
        - url: "https://slack.com/api/conversations.open"
        - authentication: "predefinedCredentialType", nodeCredentialType: "slackApi"
        - bodyParameters: [{"name": "users", "value": "<the User ID given above>"}]
-       - credentials.slackApi.id: the Slack credential ID given above
+       - credentials.slackApi.id: the Slack credential ID from the Credentials
+         list. If no Slack credential is listed, omit "credentials" from this
+         node entirely and note in your reply that the user must attach one —
+         do not substitute another ID.
        - its output includes {{ $json.channel.id }}, the DM channel ID to use as the recipient
        - connects to: "Call Approval Workflow"
 

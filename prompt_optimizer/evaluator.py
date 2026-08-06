@@ -76,6 +76,63 @@ _MAX_TURNS = 7         # KA round-trips per test case before giving up — gives
 _CONVERSATION_EXPR = "{{ $('Thread Formatter').item.json.conversation }}"
 _USER_ID_EXPR = "{{ $('Slack Trigger').item.json.user }}"
 _TIME_SAVED_EXPR = "{{ $('AI Agent').item.json.output.time_saved }}"
+_CREDENTIALS_EXPR = "{{ $('Credential Parser').item.json.credentialContext }}"
+
+# The credential list is deliberately NOT in config.yaml. It is per-request
+# instance state — which credentials this particular person can reach — so
+# baking it into the prompt meant the benchmarked prompt and the live one
+# quietly disagreed about which IDs exist. n8n supplies the real list at run
+# time; this fixture stands in for it during benchmarking only.
+#
+# The IDs are obvious fakes on purpose. A benchmark that used real credential
+# IDs would produce workflows that look importable and are actually wired to
+# someone's live account.
+_BENCHMARK_CREDENTIALS = (
+    "The user has the following credentials configured:\n"
+    'Gmail enabled, id: "BENCHMARK-gmail-0001"\n'
+    'Google Sheets enabled, id: "BENCHMARK-sheets-0001"\n'
+    'Google Sheets Trigger enabled, id: "BENCHMARK-sheetstrigger-0001"\n'
+    'Google Docs enabled, id: "BENCHMARK-docs-0001"\n'
+    'Google Drive enabled, id: "BENCHMARK-drive-0001"\n'
+    'Google Slides enabled, id: "BENCHMARK-slides-0001"\n'
+    'Google Calendar enabled, id: "BENCHMARK-calendar-0001"\n'
+    'Slack enabled, id: "BENCHMARK-slack-0001"\n'
+    'Jira enabled, id: "BENCHMARK-jira-0001"\n'
+    'Databricks enabled, id: "BENCHMARK-databricks-0001"'
+)
+
+# No credential list supplied. Says so plainly rather than leaving the raw n8n
+# expression in the prompt, which would read to the model as an opaque literal
+# and invite it to invent IDs to fill the gap.
+NO_CREDENTIALS_NOTICE = (
+    "No credential list was supplied with this request. Do not invent "
+    "credential IDs. Leave every node's \"credentials\" unset and state in "
+    "your reply which credentials the user must attach after importing."
+)
+
+
+def resolve_runtime_placeholders(
+    prompt: str,
+    *,
+    conversation: str,
+    credentials: str,
+    user_id: str,
+    minutes_saved: str,
+) -> str:
+    """Fill the n8n expressions in the production prompt with real values.
+
+    One substitution site for both callers — the benchmark and the serving
+    endpoint. Keeping it shared is the point: when they drifted, the endpoint
+    shipped prompts still containing literal `{{ $('Thread Formatter')... }}`
+    text, which n8n resolves and a bare HTTP call does not.
+    """
+    return (
+        prompt
+        .replace(_CONVERSATION_EXPR, conversation)
+        .replace(_CREDENTIALS_EXPR, credentials or NO_CREDENTIALS_NOTICE)
+        .replace(_USER_ID_EXPR, user_id)
+        .replace(_TIME_SAVED_EXPR, minutes_saved)
+    )
 
 # Terse gateway/throttling phrases seen wrapped in an HTTP 200 body instead of
 # a proper 429 — checked case-insensitively as whole phrases, not single loose
@@ -199,11 +256,12 @@ Return ONLY the reply text, nothing else — no roleplay framing, no preamble.""
 
 
 def _resolve_prompt(system_prompt: str, conversation: str, inp: SyntheticInput) -> str:
-    return (
-        system_prompt
-        .replace(_CONVERSATION_EXPR, conversation)
-        .replace(_USER_ID_EXPR, _synthetic_user_id(inp))
-        .replace(_TIME_SAVED_EXPR, str(inp.time_saved_minutes))
+    return resolve_runtime_placeholders(
+        system_prompt,
+        conversation=conversation,
+        credentials=_BENCHMARK_CREDENTIALS,
+        user_id=_synthetic_user_id(inp),
+        minutes_saved=str(inp.time_saved_minutes),
     )
 
 

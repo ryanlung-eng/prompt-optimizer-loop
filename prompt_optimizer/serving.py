@@ -42,6 +42,7 @@ from .evaluator import (
     _assemble_custom_rag_prompt,
     _has_explicit_gate_optout,
     _looks_like_truncated_json,
+    resolve_runtime_placeholders,
 )
 from .validator import validate_workflow_json
 from .llm_response import content_to_text
@@ -51,6 +52,22 @@ from .llm_response import content_to_text
 # do not happen here — this budget is purely for machine-verifiable repairs.
 # Each round is a full generation call, so this is the main latency lever.
 MAX_REPAIR_ROUNDS = 3
+
+
+@dataclass
+class RequestContext:
+    """Per-request state that n8n resolves and this service must not guess.
+
+    These used to be hardcoded in config.yaml, which meant the deployed prompt
+    asserted a fixed set of credential IDs — including ones that matched
+    nothing on the instance. The generated workflows get imported into other
+    projects, so a stale ID produces a workflow that looks importable and then
+    fails at run time pointing at a credential the importing project cannot
+    see. Now n8n sends what it actually found, per request.
+    """
+    credentials: str = ""
+    user_id: str = ""
+    minutes_saved: str = ""
 
 
 @dataclass
@@ -173,8 +190,11 @@ class WorkflowBuilderPipeline:
 
     # ----------------------------------------------------------------- api
 
-    async def build_async(self, conversation: str) -> BuildResult:
+    async def build_async(self, conversation: str,
+                          context: Optional[RequestContext] = None) -> BuildResult:
         from .rag_pipeline_v2 import build_retrieved_block, retrieve_and_filter
+
+        context = context or RequestContext()
 
         async with httpx.AsyncClient() as client:
             try:
@@ -189,6 +209,20 @@ class WorkflowBuilderPipeline:
                 self._config.prompts[self._config.benchmark.node_name], block,
             )
             kept_sources = sorted({c.source for c in kept})
+
+            # The production prompt is written for n8n, so it carries n8n
+            # expressions. Reaching the model unresolved they are just opaque
+            # literals, and the credential line in particular reads as an
+            # instruction to supply IDs from nowhere. Resolve them here with
+            # what n8n actually sent — the same substitution the benchmark
+            # does, so both paths see the same prompt.
+            system_prompt = resolve_runtime_placeholders(
+                system_prompt,
+                conversation=conversation,
+                credentials=context.credentials,
+                user_id=context.user_id,
+                minutes_saved=context.minutes_saved,
+            )
 
             prompt = f"{system_prompt}\n\nUser: {conversation}"
             rounds = 0
@@ -257,9 +291,37 @@ class WorkflowBuilderPipeline:
                     f"with '}}'. No prose before or after."
                 )
 
-    def build(self, conversation: str) -> Dict[str, Any]:
+    def build(self, conversation: str,
+              context: Optional[RequestContext] = None) -> Dict[str, Any]:
         """Blocking entry point — what the MLflow model calls per request."""
-        return asyncio.run(self.build_async(conversation)).to_dict()
+        return asyncio.run(self.build_async(conversation, context)).to_dict()
+
+
+def _context_from_payload(payload: Any) -> RequestContext:
+    """Pull the runtime context out of the request, tolerating absence.
+
+    Every field is optional: a caller that sends only a question still gets a
+    workflow, just one that declines to wire credentials rather than inventing
+    them. Missing context should degrade the answer, never fail the request.
+    """
+    if not isinstance(payload, dict):
+        return RequestContext()
+
+    def _str(*keys: str) -> str:
+        for k in keys:
+            v = payload.get(k)
+            if v is None or isinstance(v, (dict, list)):
+                continue
+            s = str(v).strip()
+            if s:
+                return s
+        return ""
+
+    return RequestContext(
+        credentials=_str("credentials", "credential_context", "credentialContext"),
+        user_id=_str("user_id", "userId", "user"),
+        minutes_saved=_str("minutes_saved", "minutesSaved", "time_saved"),
+    )
 
 
 def _conversation_from_payload(payload: Any) -> str:

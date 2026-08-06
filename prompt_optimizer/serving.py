@@ -66,7 +66,21 @@ class BuildResult:
     kept_sources: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        """Serialised for n8n.
+
+        `data` duplicates the primary payload as TEXT because the existing
+        CUSTOM.ibottaKnowledgeAssistant node in the production workflow reads
+        `$json.data`, and Workflow Formatter already parses a JSON object out
+        of it. Emitting it means the downstream half of that workflow keeps
+        working untouched while the upstream half collapses to one call — the
+        structured fields below are strictly additive for anything new.
+        """
+        d = asdict(self)
+        if self.status == "workflow" and self.workflow is not None:
+            d["data"] = json.dumps({"workflow": self.workflow})
+        else:
+            d["data"] = self.message
+        return d
 
 
 class WorkflowBuilderPipeline:
@@ -253,7 +267,11 @@ def _conversation_from_payload(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
     if isinstance(payload, dict):
-        for key in ("conversation", "input", "text", "prompt", "query"):
+        # "question" first and deliberately: it is the field n8n's existing
+        # CUSTOM.ibottaKnowledgeAssistant node sends. Accepting it means the
+        # production workflow can point at this endpoint by changing one
+        # parameter (servingEndpointId) rather than being replumbed.
+        for key in ("question", "conversation", "input", "text", "prompt", "query"):
             if isinstance(payload.get(key), str) and payload[key].strip():
                 return payload[key]
         messages = payload.get("messages")

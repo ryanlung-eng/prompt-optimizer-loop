@@ -173,6 +173,16 @@ except Exception as e:
 
 # index.sync() only picks up row-level content changes — NOT a schema/chunk-
 # boundary change, so this always deletes + recreates rather than syncing.
+#
+# The delete is ASYNCHRONOUS: delete_index() returns as soon as the request is
+# accepted, not once the index is gone, so recreating immediately crashed
+# every single run ("still exists" / not-yet-initialized). Hence: delete, then
+# POLL until it is genuinely gone, and only then create — with the create
+# itself retried, since it can also transiently fail while the backend
+# finishes tearing the old one down.
+import time
+
+
 def _create_index():
     return client.create_delta_sync_index(
         endpoint_name=ENDPOINT_NAME,
@@ -184,18 +194,57 @@ def _create_index():
         embedding_model_endpoint_name=EMBEDDING_MODEL_ENDPOINT,
     )
 
-try:
-    index = _create_index()
-    print(f"Created index: {INDEX_NAME}")
-except Exception as e:
-    if "already exists" in str(e).lower() or "RESOURCE_ALREADY_EXISTS" in str(e):
-        print(f"Index {INDEX_NAME} already exists — deleting and recreating so it picks up "
-              f"the current chunk boundaries/schema (re-embeds from scratch).")
-        client.delete_index(endpoint_name=ENDPOINT_NAME, index_name=INDEX_NAME)
-        index = _create_index()
-        print(f"Recreated index: {INDEX_NAME}")
+
+def _index_exists():
+    """True only if the index both resolves AND answers describe(). A handle
+    alone is not proof of existence — describe() is what actually round-trips
+    to the backend."""
+    try:
+        client.get_index(index_name=INDEX_NAME).describe()
+        return True
+    except Exception:
+        return False
+
+
+def _create_with_retry(attempts=12, pause=15):
+    """Create, tolerating the window where the backend still considers the old
+    index present. Re-raises the real error once the budget is spent, so a
+    genuine misconfiguration still surfaces instead of looping forever."""
+    last = None
+    for i in range(attempts):
+        try:
+            return _create_index()
+        except Exception as e:
+            last = e
+            msg = str(e).lower()
+            transient = ("already exists" in msg or "resource_already_exists" in msg
+                         or "not ready" in msg or "initializ" in msg
+                         or "in progress" in msg or "being deleted" in msg)
+            if not transient:
+                raise
+            print(f"  create attempt {i + 1}/{attempts} hit a transient state "
+                  f"({str(e)[:110]}) — waiting {pause}s…")
+            time.sleep(pause)
+    raise last
+
+
+if _index_exists():
+    print(f"Index {INDEX_NAME} already exists — deleting and recreating so it picks up "
+          f"the current chunk boundaries/schema (re-embeds from scratch).")
+    client.delete_index(endpoint_name=ENDPOINT_NAME, index_name=INDEX_NAME)
+    _deadline = time.time() + 600
+    while _index_exists():
+        if time.time() > _deadline:
+            print("  WARNING: index still reported present 10min after delete — "
+                  "attempting create anyway.")
+            break
+        print("  waiting for the delete to finish…")
+        time.sleep(10)
     else:
-        raise
+        print("  delete confirmed complete.")
+
+index = _create_with_retry()
+print(f"Index ready: {INDEX_NAME}")
 
 # COMMAND ----------
 

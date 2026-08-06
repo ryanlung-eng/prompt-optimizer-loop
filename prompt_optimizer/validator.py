@@ -719,6 +719,21 @@ def _check_trigger_self_loop_risk(nodes: List[dict], connections: dict) -> List[
 # hardcoding positions. False positives are implausible: this only ever runs
 # on values compared against a real account/bot ID, and real IDs
 # (`5b10a2844c20165700ede21g`, `U0EVAL8A78631F`) contain no such token.
+# typeVersions confirmed REAL on the live n8n instance but absent from the
+# locally installed n8n-nodes-base package, which lags it. Without this the
+# checker emits a "not a real version" advisory on every run for a version
+# that genuinely exists — noise that has appeared in every benchmark to date.
+#
+# ONLY add an entry you have actually verified against the live instance.
+# Each one below was confirmed by querying that instance's own node-type
+# definitions (not the npm package, not documentation, not inference):
+#   n8n-nodes-base.slack 2.5 — live instance reports "Slack Node - Version
+#     2.5" / "version: 2.5"; local package n8n-nodes-base@2.15.1 knows only
+#     up to 2.4.
+_VERIFIED_TYPE_VERSIONS = {
+    "n8n-nodes-base.slack": {"2.5"},
+}
+
 _PLACEHOLDER_TOKENS = frozenset({
     "YOUR", "YOURS", "REPLACE", "PLACEHOLDER", "HERE", "TODO", "FIXME",
     "CHANGEME", "CHANGE", "DUMMY", "EXAMPLE", "SAMPLE", "INSERT", "XXX", "TBD",
@@ -1171,6 +1186,14 @@ def validate_workflow_json(text: str) -> StructuralResult:
     for finding in schema_findings["unknown_type_versions"]:
         used = re.search(r"uses typeVersion ([0-9.]+)", finding)
         known = re.search(r"known: \[([0-9.,\s]+)\]", finding)
+        node_type = re.search(r"\((n8n-nodes-base\.[A-Za-z0-9]+)\)", finding)
+        # Verified-real versions the LOCAL package is simply too old to know
+        # about — drop the finding entirely rather than emit a known-false
+        # advisory on every run.
+        if node_type and used:
+            confirmed = _VERIFIED_TYPE_VERSIONS.get(node_type.group(1))
+            if confirmed and used.group(1) in confirmed:
+                continue
         significant = True
         if used and known:
             try:

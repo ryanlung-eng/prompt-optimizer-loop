@@ -44,7 +44,15 @@ DEPLOY_TIMEOUT_S = 60 * 60
 
 # Set False to deploy without touching the knowledge base (e.g. you only
 # changed config.yaml or pipeline code, not the docs).
-REFRESH_KB = True
+#
+# Currently False: the endpoint needs redeploying for the scope mode, and that
+# is a pure code + config change — the index content is unaffected, so a full
+# re-chunk and re-embed would be several minutes of work for no difference.
+#
+# SET THIS BACK TO True after uploading edited docs to the volume. Leaving it
+# False is the quiet failure mode here: the deploy succeeds, the endpoint looks
+# healthy, and it keeps serving the old corpus.
+REFRESH_KB = False
 
 # Set False to refresh the knowledge base only, without redeploying.
 # Worth knowing: the endpoint queries the index at REQUEST time, so a pure KB

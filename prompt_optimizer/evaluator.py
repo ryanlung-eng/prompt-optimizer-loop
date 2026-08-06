@@ -372,6 +372,24 @@ class WorkflowEvaluator:
             json=payload,
             timeout=timeout,
         )
+        # Some endpoints reject `temperature` outright — Opus 5 returns
+        # BAD_REQUEST "does not support the temperature parameter" and failed
+        # all 17 scenarios of its arm this way. Rather than maintain a
+        # per-model capability table that goes stale, drop the parameter and
+        # retry once when the endpoint says that is the problem. Note the
+        # consequence: that arm then samples at the endpoint's own default
+        # instead of our temperature=0, so it is not bit-for-bit reproducible
+        # the way the others are.
+        if resp.status_code == 400 and "temperature" in payload:
+            body_text = resp.text.lower()
+            if "temperature" in body_text and "not support" in body_text:
+                payload.pop("temperature")
+                resp = await client.post(
+                    endpoint_url,
+                    headers=self._headers,
+                    json=payload,
+                    timeout=timeout,
+                )
         if resp.status_code >= 400:
             # Sleep out an explicit Retry-After before letting tenacity's own
             # backoff run — the endpoint knows better than our guess when it

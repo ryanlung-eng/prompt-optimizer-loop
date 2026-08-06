@@ -311,7 +311,25 @@ with mlflow.start_run(run_name="n8n-workflow-builder-rag") as run:
     )
 print("logged:", info.model_uri)
 
-_version = mlflow.MlflowClient().get_registered_model(MODEL_NAME).latest_versions[0].version
+# Unity Catalog does not populate RegisteredModel.latest_versions (it comes back
+# None, hence the TypeError this replaces). Take the version THIS run registered
+# straight off the ModelInfo — which is also more correct than asking for the
+# latest, since "latest" would silently deploy someone else's concurrent
+# registration rather than the model just smoke-tested above.
+_version = getattr(info, "registered_model_version", None)
+
+if _version is None:                       # older mlflow: ask, newest first
+    _versions = mlflow.MlflowClient().search_model_versions(
+        f"name='{MODEL_NAME}'", order_by=["version_number DESC"], max_results=1,
+    )
+    if not _versions:
+        raise RuntimeError(
+            f"{MODEL_NAME} has no registered versions — did log_model's "
+            f"registered_model_name take effect?"
+        )
+    _version = _versions[0].version
+    print("(fell back to search_model_versions)")
+
 print("registered version:", _version)
 
 # COMMAND ----------

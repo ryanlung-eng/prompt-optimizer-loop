@@ -1,0 +1,253 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Deploy the custom-RAG workflow builder as one serving endpoint
+# MAGIC
+# MAGIC Packages retrieval + relevance filter + generation + validation + the
+# MAGIC self-repair loop behind a single Databricks Model Serving endpoint, so
+# MAGIC n8n makes ONE call and gets back a finished workflow or a clarifying
+# MAGIC question.
+# MAGIC
+# MAGIC **What this replaces in n8n.** The production automation-builder ran
+# MAGIC Workflow Builder → Workflow Validator → retry loop → Workflow Checker →
+# MAGIC Validator Parser → Workflow Fixer as separate nodes. All of that happens
+# MAGIC inside `build()` now. `automation-builder-new` (wYgXYsfeAuJSSrR7) is
+# MAGIC already rewired for it and just needs `servingEndpointId` pointed here.
+# MAGIC
+# MAGIC **Why the schema check is pure Python now.** The old validator shelled
+# MAGIC out to check_params.js, which would have meant a Node runtime plus
+# MAGIC node_modules inside this image and a process spawn per request.
+# MAGIC `schema_check.py` is asserted equivalent to the JS by
+# MAGIC `n8n_schema_check/equivalence_check.py` — run it if you touch either.
+# MAGIC
+# MAGIC **The one packaging catch:** the checker needs n8n's node manifest
+# MAGIC (`nodes.json`, 7.6 MB) at runtime. It normally reads it out of
+# MAGIC node_modules, which will not exist here, so the cell below copies it
+# MAGIC next to the module and it ships as part of the code artifact.
+
+# COMMAND ----------
+
+# MAGIC %md ## Pull the latest commit into this workspace
+
+# COMMAND ----------
+
+_REPO_PATH = "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop"
+
+try:
+    from databricks.sdk import WorkspaceClient
+
+    w = WorkspaceClient()
+    _repo = next((r for r in w.repos.list() if r.path == _REPO_PATH), None)
+    if _repo is None:
+        print(f"No Databricks Repo at {_REPO_PATH} — pull/sync manually before continuing.")
+    else:
+        w.repos.update(repo_id=_repo.id, branch="main")
+        print(f"Updated {_REPO_PATH} to latest main.")
+except Exception as e:
+    print(f"Could not auto-pull — pull manually via the Repos UI. Error: {e}")
+
+# COMMAND ----------
+
+# MAGIC %pip install mlflow httpx tenacity pyyaml databricks-ai-search databricks-sdk -q
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+import os
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop")
+
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+os.environ["DATABRICKS_HOST"] = "https://" + _ctx.browserHostName().get()
+os.environ["DATABRICKS_TOKEN"] = _ctx.apiToken().get()
+
+REPO = Path("/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop")
+ENDPOINT_NAME = "n8n-workflow-builder-rag"   # must match servingEndpointId in n8n
+MODEL_NAME = "dev.platform.n8n_workflow_builder"
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Bundle the node manifest
+# MAGIC `schema_check.py` reads `nodes.json` from node_modules when present and
+# MAGIC falls back to a copy beside itself. The serving image has no npm install,
+# MAGIC so the fallback copy is what it will actually use — this materialises it.
+
+# COMMAND ----------
+
+_src = REPO / "prompt_optimizer/n8n_schema_check/node_modules/n8n-nodes-base/dist/types/nodes.json"
+_dst = REPO / "prompt_optimizer/n8n_schema_check/nodes.json"
+if _dst.exists():
+    print(f"Bundled manifest already present: {_dst} ({_dst.stat().st_size:,} bytes)")
+elif _src.exists():
+    shutil.copyfile(_src, _dst)
+    print(f"Copied manifest -> {_dst} ({_dst.stat().st_size:,} bytes)")
+else:
+    raise FileNotFoundError(
+        f"Neither {_dst} nor {_src} exists. Run `npm install --ignore-scripts` in "
+        f"prompt_optimizer/n8n_schema_check first, or commit nodes.json — without it "
+        f"the endpoint silently loses invented-parameter detection."
+    )
+
+# Prove the checker works from the bundled copy BEFORE logging a model that
+# depends on it — a silently-degraded validator is the failure mode worth
+# spending a cell to rule out.
+from prompt_optimizer.schema_check import check_workflow
+
+_probe = check_workflow({"nodes": [{"name": "S", "type": "n8n-nodes-base.slack",
+                                    "typeVersion": 2.3,
+                                    "parameters": {"resource": "message",
+                                                   "operation": "post",
+                                                   "totallyInvented": "x"}}]})
+assert _probe["issues"], f"schema check returned nothing — manifest not loading: {_probe}"
+print("Schema check live:", _probe["issues"][0]["unknownParams"])
+
+# COMMAND ----------
+
+# MAGIC %md ## Smoke-test the pipeline in-process before deploying it
+
+# COMMAND ----------
+
+from prompt_optimizer.config import load_config
+from prompt_optimizer.serving import WorkflowBuilderPipeline
+
+cfg = load_config(str(REPO / "config.yaml"))
+pipeline = WorkflowBuilderPipeline(cfg)
+
+_result = pipeline.build(
+    "When a new row is added to my Google Sheet, post a message to #general with the row contents."
+)
+print("status      :", _result["status"])
+print("valid       :", _result["valid"])
+print("repair_rounds:", _result["repair_rounds"])
+print("errors      :", _result["errors"][:2])
+print("kept_sources:", _result["kept_sources"][:5])
+assert _result["status"] in ("workflow", "question"), _result
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Log the model
+# MAGIC config.yaml is logged as an ARTIFACT so the prompt text and retrieval
+# MAGIC settings are pinned to this model version — otherwise the deployed
+# MAGIC system could drift away from the configuration that was benchmarked.
+
+# COMMAND ----------
+
+import mlflow
+from mlflow.models import infer_signature
+
+from prompt_optimizer.serving_model import WorkflowBuilderModel
+
+mlflow.set_registry_uri("databricks-uc")
+
+_input_example = [{"question": "Post a Slack message to #general every Monday at 9am."}]
+_output_example = [{"status": "workflow", "workflow": {}, "message": "", "valid": True,
+                    "errors": [], "warnings": [], "repair_rounds": 0,
+                    "kept_sources": [], "data": "{}"}]
+
+with mlflow.start_run(run_name="n8n-workflow-builder-rag") as run:
+    info = mlflow.pyfunc.log_model(
+        artifact_path="model",
+        python_model=WorkflowBuilderModel(),
+        artifacts={"config": str(REPO / "config.yaml")},
+        code_paths=[str(REPO / "prompt_optimizer")],
+        signature=infer_signature(_input_example, _output_example),
+        input_example=_input_example,
+        registered_model_name=MODEL_NAME,
+        pip_requirements=["mlflow", "httpx", "tenacity", "pyyaml",
+                          "databricks-ai-search", "pandas"],
+    )
+print("logged:", info.model_uri)
+
+_version = mlflow.MlflowClient().get_registered_model(MODEL_NAME).latest_versions[0].version
+print("registered version:", _version)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Create / update the serving endpoint
+# MAGIC The endpoint needs its OWN Databricks credentials at runtime — it calls
+# MAGIC Vector Search and two model-serving endpoints internally. Supplied as
+# MAGIC environment variables backed by secrets, never baked into the model.
+
+# COMMAND ----------
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.serving import (
+    EndpointCoreConfigInput, ServedEntityInput,
+)
+
+w = WorkspaceClient()
+
+# NOTE: point these at a real secret scope/key before running. The host can be
+# a literal; the token must not be.
+_env_vars = {
+    "DATABRICKS_HOST": os.environ["DATABRICKS_HOST"],
+    "DATABRICKS_TOKEN": "{{secrets/n8n-builder/databricks-token}}",
+}
+
+_entity = ServedEntityInput(
+    entity_name=MODEL_NAME,
+    entity_version=_version,
+    workload_size="Small",
+    scale_to_zero_enabled=True,
+    environment_vars=_env_vars,
+)
+
+_existing = next((e for e in w.serving_endpoints.list() if e.name == ENDPOINT_NAME), None)
+if _existing is None:
+    w.serving_endpoints.create(
+        name=ENDPOINT_NAME,
+        config=EndpointCoreConfigInput(served_entities=[_entity]),
+    )
+    print(f"Creating endpoint {ENDPOINT_NAME} — this takes several minutes.")
+else:
+    w.serving_endpoints.update_config(name=ENDPOINT_NAME, served_entities=[_entity])
+    print(f"Updating endpoint {ENDPOINT_NAME} to version {_version}.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Smoke-test the deployed endpoint
+# MAGIC Run once the endpoint reports READY. This is the same call n8n's
+# MAGIC Databricks node (resource: modelServing, operation: queryEndpoint) makes.
+
+# COMMAND ----------
+
+import json
+
+import httpx
+
+_url = f"{os.environ['DATABRICKS_HOST']}/serving-endpoints/{ENDPOINT_NAME}/invocations"
+_resp = httpx.post(
+    _url,
+    headers={"Authorization": f"Bearer {os.environ['DATABRICKS_TOKEN']}",
+             "Content-Type": "application/json"},
+    json={"inputs": [{"question": "Every Monday at 9am, post a summary to #general."}]},
+    timeout=600,
+)
+print(_resp.status_code)
+print(json.dumps(_resp.json(), indent=1)[:1500])
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Cut over
+# MAGIC 1. In `automation-builder-new` (wYgXYsfeAuJSSrR7), the Workflow Builder
+# MAGIC    node's `servingEndpointId` is already set to `n8n-workflow-builder-rag`
+# MAGIC    — confirm it matches ENDPOINT_NAME above.
+# MAGIC 2. Run it end to end from Slack and check both paths: a buildable request
+# MAGIC    (status=workflow) and a vague one (status=question, relayed to the user
+# MAGIC    by Send a message12).
+# MAGIC 3. Only then unpublish the old `automation-builder`.
+# MAGIC
+# MAGIC Worth watching on the first real runs: `repair_rounds` in the response.
+# MAGIC Consistently hitting the cap (3) means the repair loop is churning rather
+# MAGIC than converging, which is exactly the failure the benchmark's execution
+# MAGIC checker showed — visible here as a number rather than as mystery latency.

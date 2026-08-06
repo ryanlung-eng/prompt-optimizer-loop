@@ -73,48 +73,32 @@ def _check_schema_issues(workflow: dict) -> dict:
     unavailable (Node.js/npm deps missing) — unavailable is "skipped", never
     "failed".
     """
-    global _node_unavailable, _timeout_warned
-    if _node_unavailable:
-        return _EMPTY_SCHEMA_FINDINGS
-    try:
-        proc = subprocess.run(
-            ["node", str(_local_script_path())],
-            input=json.dumps(workflow),
-            capture_output=True,
-            text=True,
-            timeout=_SCHEMA_CHECK_TIMEOUT,
-        )
-    except FileNotFoundError as e:
-        # The node binary itself missing won't change mid-run — stop trying
-        # entirely instead of re-attempting (and re-printing) on every call.
-        if _node_unavailable is None:
-            print(f"  Warning: n8n schema parameter check unavailable ({e}) — skipping. "
-                  f"Setup: install Node.js, then see the setup comment above "
-                  f"_LOCAL_CACHE_DIR in this file (prompt_optimizer/validator.py).")
-        _node_unavailable = True
-        return _EMPTY_SCHEMA_FINDINGS
-    except subprocess.TimeoutExpired:
-        # A slow filesystem or a one-off hiccup isn't the same as "broken" —
-        # skip just this call and keep retrying later ones, rather than
-        # disabling the check for the rest of the run over one slow call.
-        if not _timeout_warned:
-            print(f"  Warning: n8n schema parameter check timed out "
-                  f"(>{_SCHEMA_CHECK_TIMEOUT}s) for one workflow — skipping just "
-                  f"this check; will keep retrying on later calls.")
-            _timeout_warned = True
-        return _EMPTY_SCHEMA_FINDINGS
+    global _node_unavailable
+    # Pure-Python now (see schema_check.py). Previously this shelled out to
+    # check_params.js, which meant a Node runtime plus node_modules in any
+    # image that wanted validation — untenable once the pipeline is packaged
+    # as a serving endpoint, and a process spawn per workflow besides. The
+    # port is asserted equivalent to the JS by
+    # n8n_schema_check/equivalence_check.py, which diffs every finding
+    # category across a corpus (currently 16/16 identical, including the real
+    # 65-node production automation-builder). check_params.js stays in the
+    # repo as the reference implementation.
+    from .schema_check import check_workflow
 
     try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        _node_unavailable = False
+        result = check_workflow(workflow)
+    except Exception as e:
+        # A crash in the checker must degrade to "not checked", never take
+        # down the caller — same posture the subprocess version had.
+        if _node_unavailable is None:
+            print(f"  Warning: n8n schema parameter check failed ({e}) — skipping.")
+        _node_unavailable = True
         return _EMPTY_SCHEMA_FINDINGS
 
     setup_error = result.get("setupError")
     if setup_error:
-        # Same failure every call (missing npm deps, not a per-node issue) —
-        # print once and stop spawning the subprocess for the rest of the
-        # run, instead of repeating this per node per turn per input.
+        # Same failure every call (the node manifest isn't present) — print
+        # once and stop trying, instead of repeating per node per turn.
         if _node_unavailable is None:
             print(f"  Warning: n8n schema parameter check unavailable — {setup_error}")
         _node_unavailable = True

@@ -399,6 +399,53 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Grant the n8n service principal permission to query
+# MAGIC
+# MAGIC **This is what causes `API Error: 403 Forbidden` in n8n.** The endpoint
+# MAGIC is created by whoever runs this notebook, and only that identity can
+# MAGIC query it. n8n calls it with the `SP Prod - Priority Operations`
+# MAGIC credential — a different principal, which has no permission by default.
+# MAGIC
+# MAGIC 403 is worth distinguishing from the failures it gets mistaken for: a
+# MAGIC still-provisioning endpoint returns 404, and a wrong/missing credential
+# MAGIC returns 401. A 403 means the call authenticated fine and the principal
+# MAGIC simply is not allowed — waiting will never fix it.
+# MAGIC
+# MAGIC Set the service principal's application ID below. Find it in the
+# MAGIC Databricks admin console under Identity and access → Service principals,
+# MAGIC matching whichever principal issued the token in that n8n credential.
+
+# COMMAND ----------
+
+N8N_SERVICE_PRINCIPAL = None   # e.g. "1234abcd-56ef-78ab-90cd-1234567890ab"
+
+if not N8N_SERVICE_PRINCIPAL:
+    print("N8N_SERVICE_PRINCIPAL not set — SKIPPING the grant.\n"
+          "n8n will get 403 Forbidden from this endpoint until it is granted "
+          "CAN_QUERY, either by setting this and re-running the cell, or via "
+          "Serving > the endpoint > Permissions in the UI.")
+else:
+    from databricks.sdk.service.serving import (
+        ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel,
+    )
+
+    _ep = w.serving_endpoints.get(name=ENDPOINT_NAME)
+    # update_permissions, not set_permissions: set_ REPLACES the whole ACL and
+    # would silently strip everyone else's access, including your own.
+    w.serving_endpoints.update_permissions(
+        serving_endpoint_id=_ep.id,
+        access_control_list=[
+            ServingEndpointAccessControlRequest(
+                service_principal_name=N8N_SERVICE_PRINCIPAL,
+                permission_level=ServingEndpointPermissionLevel.CAN_QUERY,
+            )
+        ],
+    )
+    print(f"Granted CAN_QUERY on {ENDPOINT_NAME} to {N8N_SERVICE_PRINCIPAL}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Smoke-test the deployed endpoint
 # MAGIC Run once the endpoint reports READY. This is the same call n8n's
 # MAGIC Databricks node (resource: modelServing, operation: queryEndpoint) makes.

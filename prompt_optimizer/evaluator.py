@@ -893,8 +893,9 @@ class WorkflowEvaluator:
 
         endpoint_url defaults to rag_config.generation_endpoint (raw Claude,
         chat-completions — Sonnet unless overridden in config.yaml, e.g. to
-        try Opus) — this arm has no KA endpoint of its own, it's meant to be
-        compared against one (see benchmark_rag_vs_ka.py). Previously
+        try Opus) — this arm has no KA endpoint of its own; it is meant to be
+        compared against another arm (see model_comparison_benchmark.py).
+        Previously
         defaulted to self._generation_url (fast_generation_endpoint / Haiku)
         by accident — every custom-RAG benchmark run before this fix was
         generating on Haiku, not a model comparable to production's.

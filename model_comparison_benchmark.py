@@ -1,25 +1,49 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # RAG v2 Comparison — production vs. custom_rag vs. custom_rag_v2
+# MAGIC # Sonnet 4.6 vs Opus 5 — identical RAG pipeline, identical prompt
 # MAGIC
-# MAGIC Rebuilds the index with the latest chunking fix (the merge-forward bug
-# MAGIC that glued small sections onto unrelated large ones, e.g. "Credential
-# MAGIC Types" onto "Google Sheets Trigger") and runs all three hard-scenario
-# MAGIC benchmark arms:
+# MAGIC Rebuilds the index (picks up any pending knowledge-base-upload/ doc
+# MAGIC changes sitting in the Volume) and runs two hard-scenario arms that
+# MAGIC differ by exactly ONE variable — the generation model:
 # MAGIC
-# MAGIC 1. **production** — the KA endpoint, unchanged.
-# MAGIC 2. **custom_rag** — same production prompt + plain top-K retrieval
-# MAGIC    (Sonnet generation, now fixed from the earlier Haiku default bug).
-# MAGIC 3. **custom_rag_v2** — same as (2), plus a post-retrieval relevance
-# MAGIC    filter (Haiku) that drops chunks that don't actually help the
-# MAGIC    specific request, and an explicit grounding note — both modeled on
-# MAGIC    Ibotta's own internal HR Bot's validated production source.
+# MAGIC 1. **custom_rag_v2** — Sonnet 4.6, with the post-retrieval relevance
+# MAGIC    filter (Haiku) and grounding note, both modeled on Ibotta's own
+# MAGIC    internal HR Bot's validated production source.
+# MAGIC 2. **custom_rag_v2_strong** — the SAME pipeline and the SAME prompt,
+# MAGIC    with only the generation model swapped to Opus 5. This is the
+# MAGIC    cleanest comparison this benchmark has had: one variable.
+# MAGIC    It answers how much of the residual blocker count is a model
+# MAGIC    ceiling rather than a scaffolding gap — which matters because the
+# MAGIC    two in-loop mechanisms tried so far (execution checker, state
+# MAGIC    simulation) both looked principled and both measured negative.
 # MAGIC
-# MAGIC A re-embed is required regardless of the new arm, since the chunk
-# MAGIC boundaries themselves changed (merge-bug fix) — this notebook rebuilds
-# MAGIC the source table + recreates the index (same delete-and-recreate flow
-# MAGIC as `rag_setup_and_benchmark.py`, since `index.sync()` doesn't pick up a
-# MAGIC schema/content change of this kind) before benchmarking.
+# MAGIC    Note Opus 5 rejects the `temperature` parameter, so `_call` drops it
+# MAGIC    and retries; that arm therefore samples at the endpoint default
+# MAGIC    rather than temperature=0 and will vary more run to run.
+# MAGIC    It is also serialized with a per-call pause for a workspace
+# MAGIC    tokens-per-minute quota, so it is SLOW — roughly an hour.
+# MAGIC
+# MAGIC **Dropped arm — `custom_rag_v2_statesim`**: its first run looked like a
+# MAGIC win only because two workflows came back structurally INVALID (the
+# MAGIC instruction made the model narrate its simulation instead of emitting
+# MAGIC JSON), which left the reviewer nothing to find. With that fixed
+# MAGIC (17/17 valid) it measured clearly worse than plain v2 — 21 blockers vs
+# MAGIC 14, completeness 0.868 vs 0.926.
+# MAGIC
+# MAGIC **Dropped arm — `custom_rag_v2_checked`** (in-loop execution-trace
+# MAGIC checker): retired after three runs. It consistently scored WORST overall
+# MAGIC despite having the fewest blockers — its repair turns traded completeness
+# MAGIC for blocker-avoidance (completeness 0.67 vs plain v2's 0.88 on the last
+# MAGIC run). Trace analysis showed every repair turn issuing at least one false
+# MAGIC demand: a nonexistent double-wrapped output path
+# MAGIC (`$json.output.output.field`), and re-routing the approval DM away from
+# MAGIC the workflow owner. The `execution_check=True` toggle still exists in
+# MAGIC `evaluator.py` if it's ever worth revisiting with a stronger checker model.
+# MAGIC
+# MAGIC A re-embed is included as standard practice (safe to re-run any time the
+# MAGIC docs/examples corpus changes) — the same delete-and-recreate flow
+# MAGIC `rag_setup.py` uses, since `index.sync()` does not pick up a schema
+# MAGIC change of this kind.
 
 # COMMAND ----------
 
@@ -27,7 +51,7 @@
 # MAGIC ## Pull the latest commit into this workspace
 # MAGIC Best-effort — updates the Databricks Repo backing this path to the tip of
 # MAGIC `main` via the Repos API, so the cells below actually import the latest
-# MAGIC `evaluator.py`/`benchmark.py`/`relevance_filter.py`/`rag_pipeline_v2.py`
+# MAGIC `evaluator.py`/`benchmark.py`/`execution_checker.py`/`rag_pipeline_v2.py`
 # MAGIC instead of a stale cached checkout. If this cell errors (e.g. the path
 # MAGIC isn't a Repo, or a permissions issue), pull manually via the Repos UI's
 # MAGIC "Pull" button for `/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop`
@@ -93,9 +117,9 @@ os.environ["DATABRICKS_TOKEN"] = _ctx.apiToken().get()
 
 # MAGIC %md
 # MAGIC ## Phase 1 — Rebuild the source table + recreate the index
-# MAGIC Required because the chunk-merge bug fix changes chunk boundaries again
-# MAGIC (not just because of the new arm) — safe to re-run any time the chunker
-# MAGIC or the docs/examples corpus changes.
+# MAGIC Picks up whatever is currently in the Volume — make sure any pending
+# MAGIC `knowledge-base-upload/` doc edits have already been uploaded there
+# MAGIC before running this, or this run won't reflect them.
 
 # COMMAND ----------
 
@@ -292,10 +316,9 @@ for r in _smoke["result"]["data_array"]:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Phase 2 — Benchmark: production vs. custom_rag vs. custom_rag_v2
-# MAGIC `benchmark.run_hard()` already runs all three arms and prints both
-# MAGIC qualitative win/loss comparisons (production-vs-custom_rag and
-# MAGIC custom_rag-vs-custom_rag_v2) — no separate wiring needed here.
+# MAGIC ## Phase 2 — Benchmark: both arms
+# MAGIC `benchmark.run_hard()` already runs both arms and prints qualitative
+# MAGIC win/loss comparisons for each pair — no separate wiring needed here.
 
 # COMMAND ----------
 
@@ -318,9 +341,40 @@ results = asyncio.get_event_loop().run_until_complete(benchmark.run_hard(cfg))
 
 # COMMAND ----------
 
-# MAGIC %md ### Inspect every custom_rag_v2 failure/warning/soundness issue in detail
-# MAGIC This is the new arm — the one that actually reflects this session's
-# MAGIC changes (relevance filter + grounding note on top of the Sonnet fix).
+# MAGIC %md ### What retrieval actually saw, per scenario
+# MAGIC Every v2 arm logs its retrieval decisions into the transcript (and
+# MAGIC into MLflow as a root-span input): the retrieval query and which chunk
+# MAGIC sources survived filtering. Read this when an arm wins or loses a
+# MAGIC scenario — it answers "what did retrieval actually see" directly,
+# MAGIC instead of leaving it to be inferred from the final workflow.
+
+# COMMAND ----------
+
+import json as _json
+
+for r in results["custom_rag_v2"]:
+    meta = next((t for t in (r.transcript or []) if t.get("role") == "retrieval_meta"), None)
+    if not meta:
+        continue
+    m = _json.loads(meta["content"])
+    print("Scenario:", r.input.category)
+    print("  original :", r.input.text[:150])
+    print("  query    :", m["retrieval_query"][:250])
+    print(f"  probe saw {len(m.get('probe_docs', []))} candidate docs; "
+          f"kept {m['n_kept']}/{m['n_retrieved']} chunks from: {m['kept_sources']}")
+    # Any vendor the platform has no credential for must NEVER appear in a
+    # retrieval query. Kept as a standing check: an earlier query-rewriting
+    # arm was caught injecting "OpenAI" — a provider with no credential here —
+    # into 4 of 17 queries, which pulled the wrong docs entirely.
+    _leaked = [v for v in ("OpenAI", "GPT", "Anthropic", "Postgres", "Notion", "Airtable")
+               if v.lower() in m["retrieval_query"].lower()]
+    if _leaked:
+        print(f"  *** VENDOR LEAK IN QUERY: {_leaked} ***")
+    print("---")
+
+# COMMAND ----------
+
+# MAGIC %md ### Inspect every custom_rag_v2 (unchecked) failure/warning/soundness issue
 
 # COMMAND ----------
 
@@ -335,11 +389,11 @@ for r in results["custom_rag_v2"]:
 
 # COMMAND ----------
 
-# MAGIC %md ### Inspect every custom_rag (v1) failure/warning/soundness issue, for reference
+# MAGIC %md ### Inspect every Opus 5 failure/warning/soundness issue
 
 # COMMAND ----------
 
-for r in results["custom_rag"]:
+for r in results["custom_rag_v2_strong"]:
     if not r.structural.valid or r.structural.warnings or r.soundness_issues:
         print("Scenario:", r.input.category)
         print("Structural errors:", r.structural.errors)
@@ -350,15 +404,14 @@ for r in results["custom_rag"]:
 
 # COMMAND ----------
 
-# MAGIC %md ### Inspect PRODUCTION's failures too
-# MAGIC Previously never printed, so production's outputs were never actually
-# MAGIC inspected — "production doesn't have problem X" was an assumption, not
-# MAGIC an observation. It scores LOWEST of the three arms on knowledge_honesty,
-# MAGIC so it's worth looking at directly rather than assuming it's clean.
+# MAGIC %md ### Inspect every custom_rag_v2_strong (Opus 5) failure/warning/soundness issue
+# MAGIC Compare against the custom_rag_v2 section above on the SAME scenarios:
+# MAGIC anything still broken here is a strong candidate for a genuine model
+# MAGIC ceiling rather than something more scaffolding would fix.
 
 # COMMAND ----------
 
-for r in results["production"]:
+for r in results["custom_rag_v2_strong"]:
     if not r.structural.valid or r.structural.warnings or r.soundness_issues:
         print("Scenario:", r.input.category)
         print("Structural errors:", r.structural.errors)
@@ -366,6 +419,44 @@ for r in results["production"]:
         print("Soundness issues (Layer 3):", r.soundness_issues)
         print("Actual response:", r.actual_response[:2000])
         print("---")
+
+# COMMAND ----------
+
+# MAGIC %md ### Did either variant actually change the outcome on any shared scenario?
+# MAGIC Scenario-by-scenario diff of blocker counts against the custom_rag_v2
+# MAGIC baseline — the direct answer to "did this help," for both toggles.
+
+# COMMAND ----------
+
+def diff_against_v2(variant_arm: str):
+    v2_by_scenario = {r.input.category: r for r in results["custom_rag_v2"]}
+    variant_by_scenario = {r.input.category: r for r in results[variant_arm]}
+
+    improved, regressed, unchanged = [], [], []
+    for scenario, v2_r in v2_by_scenario.items():
+        variant_r = variant_by_scenario.get(scenario)
+        if variant_r is None:
+            continue
+        v2_blockers = len(v2_r.soundness_blockers)
+        variant_blockers = len(variant_r.soundness_blockers)
+        if variant_blockers < v2_blockers:
+            improved.append((scenario, v2_blockers, variant_blockers))
+        elif variant_blockers > v2_blockers:
+            regressed.append((scenario, v2_blockers, variant_blockers))
+        else:
+            unchanged.append((scenario, v2_blockers, variant_blockers))
+
+    print(f"[{variant_arm}] Improved (fewer blockers): {len(improved)}")
+    for s, before, after in improved:
+        print(f"  {s}: {before} -> {after} blockers")
+    print(f"\n[{variant_arm}] Regressed (more blockers): {len(regressed)}")
+    for s, before, after in regressed:
+        print(f"  {s}: {before} -> {after} blockers")
+    print(f"\n[{variant_arm}] Unchanged: {len(unchanged)}")
+    for s, before, after in unchanged:
+        print(f"  {s}: {before} blockers (both arms)")
+
+diff_against_v2("custom_rag_v2_strong")
 
 # COMMAND ----------
 
@@ -376,7 +467,7 @@ for r in results["production"]:
 # COMMAND ----------
 
 _MARKERS = ("lmchatopenai", "nodes-langchain.openai", "nodes-base.openai", "gpt-4")
-for arm in ("production", "custom_rag", "custom_rag_v2"):
+for arm in ("custom_rag_v2", "custom_rag_v2_strong"):
     hits = [
         r.input.category for r in results[arm]
         if any(m in (r.actual_response or "").lower() for m in _MARKERS)

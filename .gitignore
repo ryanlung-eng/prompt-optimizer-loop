@@ -7,3 +7,20 @@ __pycache__/
 # Ad-hoc pre/post snapshots of the automation-builder workflow taken while
 # debugging locally — staging is the intended fallback, not local backups.
 .n8n-backups/
+
+# The knowledge-base corpus lives in the Unity Catalog volume
+# (/Volumes/dev/platform/automation-builder) and is uploaded there directly.
+# Git was a second, silently-diverging copy: these were last committed before a
+# reorganisation into *-official/ folders, so the tracked set no longer matched
+# what retrieval actually reads. rag_setup.py chunks from the volume, never
+# from here.
+knowledge-base-staging/
+knowledge-base-upload/
+
+# Prompt corpora, same reason — always-injected from the volume, not the repo.
+instructions.md
+instructions-digest.md
+instructions-digest-v2.md
+
+# Internal writeup, not part of the published project.
+BREEZE_TECHNICAL_OVERVIEW.md

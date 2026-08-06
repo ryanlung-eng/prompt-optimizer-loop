@@ -11,7 +11,15 @@
 # MAGIC Workflow Builder → Workflow Validator → retry loop → Workflow Checker →
 # MAGIC Validator Parser → Workflow Fixer as separate nodes. All of that happens
 # MAGIC inside `build()` now. `automation-builder-new` (wYgXYsfeAuJSSrR7) is
-# MAGIC already rewired for it and just needs `servingEndpointId` pointed here.
+# MAGIC already rewired for it.
+# MAGIC
+# MAGIC **This is NOT a Knowledge Assistant endpoint,** so n8n cannot call it
+# MAGIC with the CUSTOM.ibottaKnowledgeAssistant node — that node speaks a
+# MAGIC KA-specific wire format, while this is an MLflow PyFunc taking
+# MAGIC `{inputs: [...]}` and returning `{predictions: [...]}`. The workflow uses
+# MAGIC the native Databricks node (resource: modelServing, operation:
+# MAGIC queryEndpoint) followed by an Unwrap Builder Response Code node that
+# MAGIC flattens `predictions[0]`, so everything downstream of it is unchanged.
 # MAGIC
 # MAGIC **Why the schema check is pure Python now.** The old validator shelled
 # MAGIC out to check_params.js, which would have meant a Node runtime plus
@@ -239,13 +247,20 @@ print(json.dumps(_resp.json(), indent=1)[:1500])
 
 # MAGIC %md
 # MAGIC ## Cut over
-# MAGIC 1. In `automation-builder-new` (wYgXYsfeAuJSSrR7), the Workflow Builder
-# MAGIC    node's `servingEndpointId` is already set to `n8n-workflow-builder-rag`
-# MAGIC    — confirm it matches ENDPOINT_NAME above.
-# MAGIC 2. Run it end to end from Slack and check both paths: a buildable request
+# MAGIC 1. **Give the Workflow Builder node a credential.** It is a native
+# MAGIC    Databricks node, so it needs a `databricksApi` (or
+# MAGIC    `databricksOAuth2Api`) credential — a DIFFERENT type from the
+# MAGIC    `databricks` credential the chat-model nodes use, so the existing
+# MAGIC    "SP Prod - Priority Operations" one will not appear in its picker. At
+# MAGIC    time of writing the only `databricksApi` credential on the instance is
+# MAGIC    "Databricks HR-Dev", which lives in a personal project and points at a
+# MAGIC    different workspace; create one in Domain/priority-ops for the
+# MAGIC    workspace this notebook deploys to.
+# MAGIC 2. Confirm the node's endpointName matches ENDPOINT_NAME above.
+# MAGIC 3. Run it end to end from Slack and check both paths: a buildable request
 # MAGIC    (status=workflow) and a vague one (status=question, relayed to the user
 # MAGIC    by Send a message12).
-# MAGIC 3. Only then unpublish the old `automation-builder`.
+# MAGIC 4. Only then unpublish the old `automation-builder`.
 # MAGIC
 # MAGIC Worth watching on the first real runs: `repair_rounds` in the response.
 # MAGIC Consistently hitting the cap (3) means the repair loop is churning rather

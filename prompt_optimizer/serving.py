@@ -68,12 +68,18 @@ class BuildResult:
     def to_dict(self) -> Dict[str, Any]:
         """Serialised for n8n.
 
-        `data` duplicates the primary payload as TEXT because the existing
-        CUSTOM.ibottaKnowledgeAssistant node in the production workflow reads
-        `$json.data`, and Workflow Formatter already parses a JSON object out
-        of it. Emitting it means the downstream half of that workflow keeps
-        working untouched while the upstream half collapses to one call — the
-        structured fields below are strictly additive for anything new.
+        `data` duplicates the primary payload as TEXT because the production
+        workflow's Workflow Formatter already parses a JSON object out of
+        `$json.data` — that was the shape the old Knowledge Assistant node
+        returned. Keeping it means the downstream half of that workflow works
+        untouched while the upstream half collapses to one call; the structured
+        fields above are strictly additive for anything new.
+
+        n8n no longer calls this with the KA node (this is a PyFunc endpoint,
+        not a Knowledge Assistant), so Model Serving wraps the whole dict as
+        `{predictions: [ ... ]}`. A small Code node in the workflow flattens
+        that back out, which is why `data` still lands where the formatter
+        expects it.
         """
         d = asdict(self)
         if self.status == "workflow" and self.workflow is not None:
@@ -267,10 +273,10 @@ def _conversation_from_payload(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
     if isinstance(payload, dict):
-        # "question" first and deliberately: it is the field n8n's existing
-        # CUSTOM.ibottaKnowledgeAssistant node sends. Accepting it means the
-        # production workflow can point at this endpoint by changing one
-        # parameter (servingEndpointId) rather than being replumbed.
+        # "question" first and deliberately: it is what the workflow's
+        # Databricks node sends in its requestBody, and what the Knowledge
+        # Assistant node sent before it. Ordering it first keeps both callers
+        # working without a branch here.
         for key in ("question", "conversation", "input", "text", "prompt", "query"):
             if isinstance(payload.get(key), str) and payload[key].strip():
                 return payload[key]

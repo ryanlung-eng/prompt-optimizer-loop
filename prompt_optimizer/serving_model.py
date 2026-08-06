@@ -28,6 +28,44 @@ import pandas as pd
 class WorkflowBuilderModel(mlflow.pyfunc.PythonModel):
     """One request in, one built workflow (or a clarifying question) out."""
 
+    @staticmethod
+    def _ensure_databricks_env() -> str:
+        """Guarantee DATABRICKS_HOST/TOKEN exist before config is resolved.
+
+        config.py raises EnvironmentError on any unresolved ${VAR}, and that
+        raise happens inside load_context — which surfaces as the opaque
+        "An error occurred in model loading code" with no hint as to which
+        variable. So resolve them here, and say plainly what was found.
+
+        Two ways they can arrive: endpoint environment_vars (secret-backed),
+        or the credentials Model Serving injects for the resources declared at
+        log time. The SDK's default credential chain finds the second, which
+        the plain os.environ lookup does not.
+        """
+        if os.environ.get("DATABRICKS_HOST") and os.environ.get("DATABRICKS_TOKEN"):
+            return "endpoint environment variables"
+        try:
+            from databricks.sdk.core import Config
+
+            cfg = Config()
+            token = (cfg.authenticate().get("Authorization", "")
+                     .replace("Bearer ", "").strip())
+            if cfg.host and token:
+                os.environ["DATABRICKS_HOST"] = cfg.host.rstrip("/")
+                os.environ["DATABRICKS_TOKEN"] = token
+                return "Databricks SDK credential chain"
+            raise RuntimeError(f"SDK produced host={bool(cfg.host)} token={bool(token)}")
+        except Exception as e:
+            present = sorted(k for k in os.environ if k.startswith("DATABRICKS_"))
+            raise EnvironmentError(
+                "Could not obtain Databricks credentials inside the serving "
+                f"container. DATABRICKS_* vars present: {present or 'none'}. "
+                f"SDK fallback failed with: {e!r}. Fix by setting "
+                "environment_vars={'DATABRICKS_HOST': ..., 'DATABRICKS_TOKEN': "
+                "'{{secrets/<scope>/<key>}}'} on the served entity — see the "
+                "commented fallback in deploy_workflow_builder_endpoint.py."
+            ) from e
+
     def load_context(self, context):
         # Imported inside load_context, not at module import: MLflow imports
         # this module during logging, when the repo's own dependencies may not
@@ -35,13 +73,20 @@ class WorkflowBuilderModel(mlflow.pyfunc.PythonModel):
         from prompt_optimizer.config import load_config
         from prompt_optimizer.serving import WorkflowBuilderPipeline
 
+        source = self._ensure_databricks_env()
+        print(f"[workflow-builder] Databricks credentials from: {source}")
+
         config_path = context.artifacts["config"]
-        # load_config resolves ${DATABRICKS_HOST}/${DATABRICKS_TOKEN} from the
-        # environment. On a serving endpoint these come from the endpoint's
-        # environment variables (set to secret references at deploy time), so
-        # no credential is ever written into the logged model.
-        os.environ.setdefault("DATABRICKS_HOST", os.environ.get("DATABRICKS_HOST", ""))
-        self._pipeline = WorkflowBuilderPipeline(load_config(config_path))
+        try:
+            cfg = load_config(config_path)
+        except Exception as e:
+            raise RuntimeError(
+                f"load_config({config_path}) failed: {e!r}. The config artifact "
+                f"is logged with the model, so this is a resolution problem "
+                f"(an unset ${{VAR}}), not a missing file."
+            ) from e
+        self._pipeline = WorkflowBuilderPipeline(cfg)
+        print("[workflow-builder] pipeline ready")
 
     def _one(self, payload: Any) -> Dict[str, Any]:
         from prompt_optimizer.serving import (

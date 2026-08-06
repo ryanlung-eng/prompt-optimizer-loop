@@ -59,6 +59,43 @@ except Exception as e:
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Fetch the node manifest
+# MAGIC Same recipe `workflow_builder_eval.py` has always used: the cluster has no
+# MAGIC npm, so download a portable Node and use its npm. Lands in
+# MAGIC `/tmp/n8n_schema_check_cache`, which is exactly where `validator.py`'s
+# MAGIC `_LOCAL_CACHE_DIR` already looks — so this also makes the checker work in
+# MAGIC this notebook, not only inside the model that gets logged.
+# MAGIC
+# MAGIC Skipped automatically if the manifest is already there, so a re-run on a
+# MAGIC warm cluster costs nothing.
+
+# COMMAND ----------
+
+# MAGIC %sh
+# MAGIC set -e
+# MAGIC MANIFEST=/tmp/n8n_schema_check_cache/node_modules/n8n-nodes-base/dist/types/nodes.json
+# MAGIC if [ -f "$MANIFEST" ]; then
+# MAGIC   echo "Manifest already cached: $(du -h "$MANIFEST" | cut -f1)"
+# MAGIC   exit 0
+# MAGIC fi
+# MAGIC
+# MAGIC if [ ! -x /tmp/node22/bin/npm ]; then
+# MAGIC   mkdir -p /tmp/node22 && cd /tmp/node22
+# MAGIC   curl -fsSL -o node.tar.gz https://nodejs.org/dist/v22.9.0/node-v22.9.0-linux-x64.tar.gz
+# MAGIC   tar -xzf node.tar.gz --strip-components=1
+# MAGIC fi
+# MAGIC /tmp/node22/bin/npm --version
+# MAGIC
+# MAGIC REPO=/Workspace/Users/ryan.lung@ibotta.com/prompt-optimizer-loop
+# MAGIC mkdir -p /tmp/n8n_schema_check_cache
+# MAGIC cp $REPO/prompt_optimizer/n8n_schema_check/check_params.js /tmp/n8n_schema_check_cache/
+# MAGIC cp $REPO/prompt_optimizer/n8n_schema_check/package.json    /tmp/n8n_schema_check_cache/
+# MAGIC cd /tmp/n8n_schema_check_cache && /tmp/node22/bin/npm install --ignore-scripts
+# MAGIC ls -la "$MANIFEST"
+
+# COMMAND ----------
+
 # MAGIC %pip install mlflow httpx tenacity pyyaml databricks-ai-search databricks-sdk -q
 
 # COMMAND ----------
@@ -102,46 +139,20 @@ MODEL_NAME = "dev.platform.n8n_workflow_builder"
 # MAGIC That staged copy is then prepended to `sys.path` and is what gets logged —
 # MAGIC so the smoke tests below exercise exactly the tree that ships.
 # MAGIC
-# MAGIC The scratch location is probed rather than hardcoded: `/local_disk0` is
-# MAGIC the classic-cluster answer but does not exist on serverless.
+# MAGIC The manifest itself comes from the `%sh` cell near the top, which uses
+# MAGIC the same portable-Node recipe `workflow_builder_eval.py` has always used.
 
 # COMMAND ----------
 
 import json
-import subprocess
 import tempfile
 
-
-def _writable_base() -> Path:
-    """First scratch location this compute can actually write to.
-
-    /local_disk0 is the classic-cluster answer and is preferred because it
-    persists across cells, so a later re-run reuses any npm install. It does
-    not exist (or is not writable) on serverless, hence the fallbacks — and
-    the probe is an actual write, not an os.access() guess, because the
-    failure this replaces was a PermissionError on a path that looked fine.
-    """
-    for base in (Path("/local_disk0"), Path(tempfile.gettempdir()), Path.home()):
-        try:
-            base.mkdir(parents=True, exist_ok=True)
-            probe = base / ".wf_builder_write_probe"
-            probe.write_text("ok")
-            probe.unlink()
-            return base
-        except Exception:
-            continue
-    raise RuntimeError(
-        "No writable scratch directory found (tried /local_disk0, "
-        f"{tempfile.gettempdir()}, {Path.home()}). Set one explicitly below."
-    )
-
-
-SCRATCH = _writable_base()
-print(f"Scratch base: {SCRATCH}")
-
-STAGE = SCRATCH / "wf_builder_pkg"
+# Stage the package to /tmp so the manifest can sit beside the checker without
+# writing into the Repo folder — node_modules-shaped writes under /Workspace
+# break Databricks Repos' git-status UI, which is why validator.py keeps its
+# cache out here too.
+STAGE = Path(tempfile.gettempdir()) / "wf_builder_pkg"
 PKG = STAGE / "prompt_optimizer"
-_MANIFEST_REL = Path("n8n_schema_check/nodes.json")
 
 if STAGE.exists():
     shutil.rmtree(STAGE)
@@ -152,49 +163,27 @@ shutil.copytree(
 )
 print(f"Staged package -> {PKG}")
 
-_dst = PKG / _MANIFEST_REL
+# The %sh cell above put the manifest in validator.py's own _LOCAL_CACHE_DIR.
+# Look there first, then at anything already sitting in the repo checkout.
+_dst = PKG / "n8n_schema_check/nodes.json"
+_nm = Path("node_modules/n8n-nodes-base/dist/types/nodes.json")
 _candidates = [
+    Path(tempfile.gettempdir()) / "n8n_schema_check_cache" / _nm,
     REPO / "prompt_optimizer/n8n_schema_check/nodes.json",
-    REPO / "prompt_optimizer/n8n_schema_check/node_modules/n8n-nodes-base/dist/types/nodes.json",
+    REPO / "prompt_optimizer/n8n_schema_check" / _nm,
 ]
 _found = next((p for p in _candidates if p.exists()), None)
+if _found is None:
+    raise FileNotFoundError(
+        "nodes.json not found in any of:\n  "
+        + "\n  ".join(str(c) for c in _candidates)
+        + "\n\nThe %sh cell above should have produced the first one. Re-run it "
+          "and check its output — without the manifest the endpoint would ship a "
+          "schema check that silently finds nothing."
+    )
 
-if _found is not None:
-    shutil.copyfile(_found, _dst)
-    print(f"Manifest from {_found}")
-else:
-    # Fetch it. Installed to scratch, not the Repo folder — installing npm
-    # packages under /Workspace was tried before and is slow and flaky.
-    _npm_dir = SCRATCH / "n8n_schema_check_npm"
-    _npm_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(REPO / "prompt_optimizer/n8n_schema_check/package.json",
-                    _npm_dir / "package.json")
-    print(f"No manifest found — running npm install in {_npm_dir} (a few minutes)…")
-    try:
-        _r = subprocess.run(
-            ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund"],
-            cwd=_npm_dir, capture_output=True, text=True, timeout=1800,
-        )
-    except FileNotFoundError:
-        raise RuntimeError(
-            "npm is not available on this cluster, and nodes.json is not present. "
-            "Either use a runtime with Node installed, or run "
-            "`npm install --ignore-scripts` in prompt_optimizer/n8n_schema_check "
-            "locally and upload the resulting "
-            "node_modules/n8n-nodes-base/dist/types/nodes.json to "
-            f"{_candidates[0]} in the Workspace."
-        )
-    if _r.returncode != 0:
-        raise RuntimeError(f"npm install failed:\n{_r.stdout[-2000:]}\n{_r.stderr[-2000:]}")
-    _npm_manifest = _npm_dir / "node_modules/n8n-nodes-base/dist/types/nodes.json"
-    if not _npm_manifest.exists():
-        raise FileNotFoundError(
-            f"npm install succeeded but {_npm_manifest} is missing — the "
-            f"n8n-nodes-base layout may have changed."
-        )
-    shutil.copyfile(_npm_manifest, _dst)
-    print(f"Manifest from npm install")
-
+shutil.copyfile(_found, _dst)
+print(f"Manifest from {_found}")
 print(f"Bundled manifest: {_dst} ({_dst.stat().st_size:,} bytes)")
 assert _dst.stat().st_size > 1_000_000, "manifest implausibly small — truncated copy?"
 

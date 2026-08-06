@@ -230,9 +230,10 @@ assistant. Do NOT count referencing any of these as fabrication:
         standard n8n LangChain node", "does not exist", "will fail to load",
         or that it should be `@n8n/n8n-nodes-langchain.lmChatDatabricks` —
         that is the non-existent one.
-      - Approval sub-workflow ID: aytM7Ef6tOKiGRTQ (cachedResultName
-        "slack-workflow-approval") — this is a fixed, shared, pre-existing
-        sub-workflow, not something the assistant invented.
+      - Approval sub-workflow ID: PYUSllZIpiJxs74Z (cachedResultName
+        "slack-workflow-approval") — VERIFIED on the live instance: this is a
+        fixed, shared, pre-existing sub-workflow, not something the assistant
+        invented.
     A credential/workflow ID is ONLY a fabrication if it does NOT match any
     value in this list AND is not a placeholder covered by the bullet above.
     The assistant also has no way to know which specific account/inbox a

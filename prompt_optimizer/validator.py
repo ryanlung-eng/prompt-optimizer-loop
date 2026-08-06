@@ -491,7 +491,12 @@ def _check_toolworkflow_self_reference(nodes: List[dict]) -> List[str]:
 # the parameter values that make it an actual outbound send (vs. a read).
 _SLACK_SEND_OPS = {"post", "postEphemeral", "sendAndWait", "update"}
 _GMAIL_SEND_OPS = {"send", "reply", "sendAndWait"}
-_APPROVAL_WORKFLOW_ID = "aytM7Ef6tOKiGRTQ"
+# Verified against the live instance: PYUSllZIpiJxs74Z is "slack-workflow-approval"
+# (active). The previous value here, aytM7Ef6tOKiGRTQ, matches no workflow on the
+# instance — so this check was passing workflows wired to a dead sub-workflow ID
+# and would have flagged correctly-wired ones. The gate looked enforced and was
+# not, which is the worst state for a safety check to be in.
+_APPROVAL_WORKFLOW_ID = "PYUSllZIpiJxs74Z"
 
 
 def _check_approval_gate(nodes: List[dict], connections: dict) -> List[str]:

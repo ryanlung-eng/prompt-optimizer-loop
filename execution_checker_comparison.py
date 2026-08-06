@@ -1,30 +1,34 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Custom RAG Pipeline Variants — v2 vs. v2 + state-simulation vs. v2 on Opus 5
+# MAGIC # Sonnet 4.6 vs Opus 5 — identical RAG pipeline, identical prompt
 # MAGIC
 # MAGIC Rebuilds the index (picks up any pending knowledge-base-upload/ doc
-# MAGIC changes sitting in the Volume) and runs three hard-scenario benchmark
-# MAGIC arms. Production is deliberately NOT one of them — across every run so
-# MAGIC far the custom RAG pipeline has consistently and clearly exceeded it, so
-# MAGIC this isolates differences BETWEEN the custom pipeline variants instead:
+# MAGIC changes sitting in the Volume) and runs two hard-scenario arms that
+# MAGIC differ by exactly ONE variable — the generation model:
 # MAGIC
-# MAGIC 2. **custom_rag_v2** — same as (1), plus a post-retrieval relevance
-# MAGIC    filter (Haiku) and an explicit grounding note, both modeled on
-# MAGIC    Ibotta's own internal HR Bot's validated production source.
-# MAGIC 3. **custom_rag_v2_statesim** — same as (2), plus a state-transition
-# MAGIC    self-simulation block appended to the builder prompt (see
-# MAGIC    `state_simulation.py`). Four fixed questions applied to EVERY path:
-# MAGIC    re-entry (does this path change the state my own trigger selects
-# MAGIC    on?), obligation (did it discharge what the entry point promised,
-# MAGIC    including on deny/error paths?), unconditional work (is every
-# MAGIC    must-always-happen action on every path?), and reference resolution
-# MAGIC    on the path being walked. Targets the "consequence" blocker class —
-# MAGIC    emails never marked read, webhook hangs on deny, log skipped on deny.
-# MAGIC 4. **custom_rag_v2_strong** — the (2) pipeline and the (2) prompt, with
-# MAGIC    ONLY the generation model swapped to Opus 5. Answers how much of the
-# MAGIC    residual is a model ceiling rather than a scaffolding gap. Read
-# MAGIC    against (3) it also says whether consequence-reasoning is better
-# MAGIC    bought with a prompt mechanism or with raw capability.
+# MAGIC 1. **custom_rag_v2** — Sonnet 4.6, with the post-retrieval relevance
+# MAGIC    filter (Haiku) and grounding note, both modeled on Ibotta's own
+# MAGIC    internal HR Bot's validated production source.
+# MAGIC 2. **custom_rag_v2_strong** — the SAME pipeline and the SAME prompt,
+# MAGIC    with only the generation model swapped to Opus 5. This is the
+# MAGIC    cleanest comparison this benchmark has had: one variable.
+# MAGIC    It answers how much of the residual blocker count is a model
+# MAGIC    ceiling rather than a scaffolding gap — which matters because the
+# MAGIC    two in-loop mechanisms tried so far (execution checker, state
+# MAGIC    simulation) both looked principled and both measured negative.
+# MAGIC
+# MAGIC    Note Opus 5 rejects the `temperature` parameter, so `_call` drops it
+# MAGIC    and retries; that arm therefore samples at the endpoint default
+# MAGIC    rather than temperature=0 and will vary more run to run.
+# MAGIC    It is also serialized with a per-call pause for a workspace
+# MAGIC    tokens-per-minute quota, so it is SLOW — roughly an hour.
+# MAGIC
+# MAGIC **Dropped arm — `custom_rag_v2_statesim`**: its first run looked like a
+# MAGIC win only because two workflows came back structurally INVALID (the
+# MAGIC instruction made the model narrate its simulation instead of emitting
+# MAGIC JSON), which left the reviewer nothing to find. With that fixed
+# MAGIC (17/17 valid) it measured clearly worse than plain v2 — 21 blockers vs
+# MAGIC 14, completeness 0.868 vs 0.926.
 # MAGIC
 # MAGIC **Dropped arm — `custom_rag_v2_checked`** (in-loop execution-trace
 # MAGIC checker): retired after three runs. It consistently scored WORST overall
@@ -35,11 +39,6 @@
 # MAGIC (`$json.output.output.field`), and re-routing the approval DM away from
 # MAGIC the workflow owner. The `execution_check=True` toggle still exists in
 # MAGIC `evaluator.py` if it's ever worth revisiting with a stronger checker model.
-# MAGIC
-# MAGIC **Cost/latency note:** arm 3 adds one Haiku call plus one extra vector
-# MAGIC search per scenario (the grounding probe) beyond what plain v2 does —
-# MAGIC both once per scenario, not per turn. That's the tradeoff being measured:
-# MAGIC does better-targeted retrieval buy a measurable improvement.
 # MAGIC
 # MAGIC A re-embed is included as standard practice (safe to re-run any time the
 # MAGIC docs/examples corpus changes) — same delete-and-recreate flow as
@@ -317,8 +316,8 @@ for r in _smoke["result"]["data_array"]:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Phase 2 — Benchmark: all three arms
-# MAGIC `benchmark.run_hard()` already runs all three arms and prints qualitative
+# MAGIC ## Phase 2 — Benchmark: both arms
+# MAGIC `benchmark.run_hard()` already runs both arms and prints qualitative
 # MAGIC win/loss comparisons for each pair — no separate wiring needed here.
 
 # COMMAND ----------
@@ -390,11 +389,11 @@ for r in results["custom_rag_v2"]:
 
 # COMMAND ----------
 
-# MAGIC %md ### Inspect every custom_rag_v2_statesim failure/warning/soundness issue
+# MAGIC %md ### Inspect every Opus 5 failure/warning/soundness issue
 
 # COMMAND ----------
 
-for r in results["custom_rag_v2_statesim"]:
+for r in results["custom_rag_v2_strong"]:
     if not r.structural.valid or r.structural.warnings or r.soundness_issues:
         print("Scenario:", r.input.category)
         print("Structural errors:", r.structural.errors)
@@ -457,8 +456,6 @@ def diff_against_v2(variant_arm: str):
     for s, before, after in unchanged:
         print(f"  {s}: {before} blockers (both arms)")
 
-diff_against_v2("custom_rag_v2_statesim")
-print("\n" + "=" * 80 + "\n")
 diff_against_v2("custom_rag_v2_strong")
 
 # COMMAND ----------
@@ -470,7 +467,7 @@ diff_against_v2("custom_rag_v2_strong")
 # COMMAND ----------
 
 _MARKERS = ("lmchatopenai", "nodes-langchain.openai", "nodes-base.openai", "gpt-4")
-for arm in ("custom_rag_v2", "custom_rag_v2_statesim", "custom_rag_v2_strong"):
+for arm in ("custom_rag_v2", "custom_rag_v2_strong"):
     hits = [
         r.input.category for r in results[arm]
         if any(m in (r.actual_response or "").lower() for m in _MARKERS)

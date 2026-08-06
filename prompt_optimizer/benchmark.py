@@ -38,7 +38,6 @@ from rich.table import Table
 from .config import Config
 from .evaluator import WorkflowEvaluator
 from .judge import DatabricksJudge, EvalResult
-from .state_simulation import STATE_SIMULATION_INSTRUCTION
 from .synthetic_data import SyntheticInput
 
 console = Console()
@@ -254,11 +253,23 @@ async def run(config: Config) -> Dict[str, List[EvalResult]]:
 # a standing arm — it lost consistently across every run, and with the
 # interesting comparisons now all v2-relative it was only costing runtime.
 # evaluator.run_batch_custom_rag still exists if it's ever worth re-checking.
-_HARD_ARMS = ["custom_rag_v2", "custom_rag_v2_statesim", "custom_rag_v2_strong"]
+# custom_rag_v2_statesim (the four state-transition questions appended to the
+# builder prompt) was dropped after two runs. Its first run looked like a win
+# only because two workflows came back structurally INVALID — the instruction
+# made the model narrate its simulation instead of emitting JSON — which left
+# the soundness reviewer nothing to find and flattered the blocker count. With
+# that format bug fixed (17/17 valid), the mechanism measured clearly WORSE
+# than plain v2: 21 blockers vs 14, completeness 0.868 vs 0.926. That makes it
+# the second in-loop mechanism after the execution checker to look principled
+# and measure negative. STATE_SIMULATION_INSTRUCTION is still importable if
+# it's ever worth revisiting.
+#
+# What remains is the cleanest comparison this benchmark has had: identical
+# pipeline, identical prompt, only the generation model differs.
+_HARD_ARMS = ["custom_rag_v2", "custom_rag_v2_strong"]
 _HARD_ARM_LABELS = {
-    "custom_rag_v2": "Custom RAG v2 (+ relevance filter + grounding note)",
-    "custom_rag_v2_statesim": "Custom RAG v2 + state-transition self-simulation",
-    "custom_rag_v2_strong": "Custom RAG v2 on a stronger generation model",
+    "custom_rag_v2": "Sonnet 4.6 (custom RAG v2)",
+    "custom_rag_v2_strong": "Opus 5 (same pipeline + prompt)",
 }
 
 # Every string in StructuralResult.warnings comes from exactly one of these
@@ -336,15 +347,6 @@ async def run_hard_benchmark(
     pairs_v2 = await evaluator.run_batch_custom_rag_v2(base_instructions, inputs, rag_config)
     results["custom_rag_v2"] = await judge.evaluate_batch(pairs_v2)
     _trace("custom_rag_v2", results["custom_rag_v2"])
-
-    console.print(f"  Running arm: custom_rag_v2_statesim (+ state-transition "
-                  f"self-simulation) on {len(inputs)} hard scenarios…")
-    pairs_statesim = await evaluator.run_batch_custom_rag_v2(
-        base_instructions, inputs, rag_config,
-        extra_instructions=STATE_SIMULATION_INSTRUCTION,
-    )
-    results["custom_rag_v2_statesim"] = await judge.evaluate_batch(pairs_statesim)
-    _trace("custom_rag_v2_statesim", results["custom_rag_v2_statesim"])
 
     # Same pipeline and same prompt as plain custom_rag_v2 — ONLY the
     # generation model differs, so this arm answers "how much of what's left
@@ -520,7 +522,7 @@ def print_hard_benchmark_report(results: Dict[str, List[EvalResult]], dim_names:
 
 def print_qualitative_examples_hard(
     results: Dict[str, List[EvalResult]], arm_a: str = "custom_rag_v2",
-    arm_b: str = "custom_rag_v2_statesim", n: int = 5,
+    arm_b: str = "custom_rag_v2_strong", n: int = 5,
 ) -> None:
     """
     With only 17 scenarios, every disagreement is worth seeing directly —
@@ -575,9 +577,7 @@ async def run_hard(config: Config) -> Dict[str, List[EvalResult]]:
 
     results = await run_hard_benchmark(config, evaluator, judge)
     print_hard_benchmark_report(results, dim_names)
-    console.rule("[bold]custom_rag_v2 vs custom_rag_v2_statesim (state simulation)[/bold]")
-    print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_statesim")
     if results.get("custom_rag_v2_strong"):
-        console.rule("[bold]custom_rag_v2 vs custom_rag_v2_strong (stronger model)[/bold]")
+        console.rule("[bold]Sonnet 4.6 vs Opus 5 (identical pipeline + prompt)[/bold]")
         print_qualitative_examples_hard(results, "custom_rag_v2", "custom_rag_v2_strong")
     return results

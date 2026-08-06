@@ -156,35 +156,68 @@ except Exception as e:
 
 # COMMAND ----------
 
-# MAGIC %md ## Wait for the index to come online
-# MAGIC A freshly created index needs to provision the endpoint compute and embed
-# MAGIC every row before it's queryable — Databricks' own docs say to expect this
-# MAGIC to take several minutes. `BadRequest: ... is not ready` right after
-# MAGIC creation is this, not a real error; this cell polls until it's done
-# MAGIC instead of guessing when to re-run.
+# MAGIC %md ## Wait until the index actually answers queries
+# MAGIC A freshly created index provisions compute and embeds every row before it
+# MAGIC is queryable — expect several minutes.
+# MAGIC
+# MAGIC **Why this polls a real query rather than the status field.** Reaching
+# MAGIC `detailed_state == ONLINE*` is necessary but NOT sufficient: there is a
+# MAGIC window where the index reports ONLINE and still rejects searches, which
+# MAGIC is why the smoke test below failed on essentially every first run. The
+# MAGIC status field answers "has provisioning finished", which is not the
+# MAGIC question we care about. Readiness here means "a search returns rows", so
+# MAGIC that is what gets polled — the check and the thing it guards are now the
+# MAGIC same operation, and the cell cannot pass while the next one would fail.
 
 # COMMAND ----------
 
 import time
 
-while True:
-    state = index.describe().get("status", {}).get("detailed_state", "")
-    if state.startswith("ONLINE"):
-        print("Index is ONLINE")
-        break
-    print(f"Waiting for index to be ONLINE (currently: {state or 'unknown'})…")
-    time.sleep(15)
+_PROBE = "how do I avoid a Slack bot replying to its own messages"
+
+
+def wait_until_queryable(idx, deadline_s=45 * 60, poll_s=15):
+    """Block until a similarity_search succeeds. Returns the first result set."""
+    started, last_state = time.time(), None
+    while time.time() - started < deadline_s:
+        try:
+            state = idx.describe().get("status", {}).get("detailed_state", "")
+        except Exception as e:                      # transient during creation
+            state = f"describe failed: {type(e).__name__}"
+        if state != last_state:
+            print(f"  [{int(time.time() - started):>4}s] {state or 'unknown'}")
+            last_state = state
+        if str(state).startswith("ONLINE"):
+            try:
+                res = idx.similarity_search(
+                    query_text=_PROBE,
+                    columns=["id", "title", "text", "source"],
+                    num_results=3,
+                )
+                print(f"Index queryable after {int(time.time() - started)}s")
+                return res
+            except Exception as e:
+                # ONLINE but not yet serving — the exact gap this loop exists for
+                print(f"  ONLINE but not serving yet ({type(e).__name__}); waiting")
+        time.sleep(poll_s)
+    raise TimeoutError(
+        f"Index still not queryable after {deadline_s}s (last state: {last_state}). "
+        f"Check the index in the Databricks UI before re-running."
+    )
+
+
+results = wait_until_queryable(index)
 
 # COMMAND ----------
 
 # MAGIC %md ## Smoke test
+# MAGIC Uses the result the readiness poll already fetched, so this cannot fail
+# MAGIC for timing reasons — if the cell above returned, the index answers.
 
 # COMMAND ----------
 
-results = index.similarity_search(
-    query_text="how do I avoid a Slack bot replying to its own messages",
-    columns=["id", "title", "text", "source"],
-    num_results=3,
-)
-for r in results["result"]["data_array"]:
+rows = results["result"]["data_array"]
+assert rows, "Index answered but returned no rows — the source table may be empty."
+for r in rows:
     print(r[0], "-", r[1])
+print(f"\n{len(rows)} results — knowledge base is live.")
